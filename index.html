@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Mirror Membrane — 生成アート試作</title>
+<style>
+  :root{
+    --bg:#07080c;
+    --panel:rgba(255,255,255,0.06);
+    --border:rgba(255,255,255,0.14);
+    --text:#eef0f5;
+    --sub:#9aa1b0;
+    --accent:#7dd3fc;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    overflow:hidden;
+  }
+  #app{position:fixed; inset:0;}
+  canvas{position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair;}
+
+  #hud{
+    position:fixed; top:16px; left:16px; right:16px;
+    display:flex; align-items:flex-start; justify-content:space-between;
+    gap:16px; z-index:10; pointer-events:none;
+  }
+  #title{pointer-events:auto;}
+  #title h1{
+    margin:0; font-size:15px; font-weight:600; letter-spacing:.02em;
+  }
+  #title p{
+    margin:4px 0 0; font-size:12px; color:var(--sub); max-width:440px; line-height:1.5;
+  }
+  #tabs{
+    pointer-events:auto;
+    display:flex; gap:6px; background:var(--panel);
+    border:1px solid var(--border); backdrop-filter:blur(10px);
+    padding:5px; border-radius:12px;
+  }
+  .tab{
+    appearance:none; border:none; background:transparent; color:var(--sub);
+    font-size:12.5px; padding:8px 12px; border-radius:8px; cursor:pointer;
+    font-family:inherit; white-space:nowrap; transition:.15s;
+  }
+  .tab:hover{color:var(--text);}
+  .tab.active{background:rgba(255,255,255,0.14); color:var(--text);}
+
+  #foot{
+    position:fixed; bottom:14px; left:16px; right:16px;
+    display:flex; justify-content:space-between; align-items:flex-end;
+    z-index:10; pointer-events:none; font-size:11px; color:var(--sub);
+  }
+  #foot .badge{
+    pointer-events:auto; background:var(--panel); border:1px solid var(--border);
+    padding:6px 10px; border-radius:8px; backdrop-filter:blur(10px);
+  }
+  #fps{opacity:.6;}
+
+  @media (max-width:640px){
+    #title p{display:none;}
+    .tab{padding:7px 9px; font-size:11.5px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="c"></canvas>
+</div>
+
+<div id="hud">
+  <div id="title">
+    <h1>Mirror Membrane — 生成アート試作 3種</h1>
+    <p id="desc">停止せず永遠に姿を変え続ける生成アートのプロトタイプ。タブで切り替えて見比べられます。</p>
+    <p id="credit" style="margin:6px 0 0; font-size:10.5px; color:var(--sub); opacity:.6;">落合陽一氏の《null²》にインスパイアされた、非公式のファンメイド作品です</p>
+  </div>
+  <div id="tabs">
+    <button class="tab active" data-mode="life">セルオートマトン</button>
+    <button class="tab" data-mode="flow">フローフィールド</button>
+    <button class="tab" data-mode="mirror">ミラー膜</button>
+  </div>
+</div>
+
+<div id="foot">
+  <div class="badge" id="hint">クリック・タップした場所から変化が広がります(ドラッグでも反応)</div>
+  <div class="badge" id="fps">60 fps</div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W, H, DPR;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = Math.floor(W*DPR); canvas.height = Math.floor(H*DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize);
+
+  // ---------- pointer ----------
+  const pointer = {x:0.5, y:0.5, active:false, kicks:[]};
+  const clickRings = []; // visual feedback shared across all modes
+  function setPointer(cx, cy, {ring=false}={}){
+    const r = canvas.getBoundingClientRect();
+    pointer.x = (cx - r.left)/r.width;
+    pointer.y = (cy - r.top)/r.height;
+    pointer.kicks.push({x:pointer.x, y:pointer.y, t:performance.now()});
+    if(pointer.kicks.length > 8) pointer.kicks.shift();
+    if(ring){
+      clickRings.push({x:cx - r.left, y:cy - r.top, start: performance.now()});
+      if(clickRings.length > 6) clickRings.shift();
+    }
+  }
+  canvas.addEventListener('pointerdown', e=>{
+    pointer.active = true;
+    setPointer(e.clientX, e.clientY, {ring:true});
+  });
+  canvas.addEventListener('pointermove', e=>{ if(pointer.active) setPointer(e.clientX,e.clientY); });
+  window.addEventListener('pointerup', ()=> pointer.active=false);
+  canvas.addEventListener('pointercancel', ()=> pointer.active=false);
+  function drawClickRings(now){
+    for(let i=clickRings.length-1;i>=0;i--){
+      const c = clickRings[i];
+      const age = (now - c.start)/1000; // seconds
+      if(age > 0.9){ clickRings.splice(i,1); continue; }
+      const p = age/0.9;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 6 + p*70, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(240,246,255,${0.5*(1-p)})`;
+      ctx.lineWidth = 2*(1-p) + 0.4;
+      ctx.stroke();
+    }
+  }
+
+  // ---------- tiny value-noise (no deps) ----------
+  const NOISE_SIZE = 256;
+  const noisePerm = new Uint8Array(NOISE_SIZE*2);
+  (function seedNoise(){
+    const p = new Uint8Array(NOISE_SIZE);
+    for(let i=0;i<NOISE_SIZE;i++) p[i]=i;
+    for(let i=NOISE_SIZE-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      const t = p[i]; p[i]=p[j]; p[j]=t;
+    }
+    for(let i=0;i<NOISE_SIZE*2;i++) noisePerm[i]=p[i & (NOISE_SIZE-1)];
+  })();
+  function hsl2rgb(h, s, l){
+    h = ((h%360)+360)%360; s/=100; l/=100;
+    const c = (1-Math.abs(2*l-1))*s;
+    const x = c*(1-Math.abs((h/60)%2-1));
+    const m = l-c/2;
+    let r=0,g=0,b=0;
+    if(h<60){r=c;g=x;b=0;} else if(h<120){r=x;g=c;b=0;}
+    else if(h<180){r=0;g=c;b=x;} else if(h<240){r=0;g=x;b=c;}
+    else if(h<300){r=x;g=0;b=c;} else {r=c;g=0;b=x;}
+    return [(r+m)*255,(g+m)*255,(b+m)*255];
+  }
+  function fade(t){ return t*t*t*(t*(t*6-15)+10); }
+  function grad(hash, x, y, z){
+    const h = hash & 15;
+    const u = h<8 ? x : y;
+    const v = h<4 ? y : (h===12||h===14 ? x : z);
+    return ((h&1)===0 ? u : -u) + ((h&2)===0 ? v : -v);
+  }
+  function perlin3(x,y,z){
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+    x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+    const u = fade(x), v = fade(y), w = fade(z);
+    const A = noisePerm[X]+Y, AA = noisePerm[A]+Z, AB = noisePerm[A+1]+Z;
+    const B = noisePerm[X+1]+Y, BA = noisePerm[B]+Z, BB = noisePerm[B+1]+Z;
+    function lerp(a,b,t){return a+t*(b-a);}
+    return lerp(
+      lerp(
+        lerp(grad(noisePerm[AA],x,y,z), grad(noisePerm[BA],x-1,y,z), u),
+        lerp(grad(noisePerm[AB],x,y-1,z), grad(noisePerm[BB],x-1,y-1,z), u), v),
+      lerp(
+        lerp(grad(noisePerm[AA+1],x,y,z-1), grad(noisePerm[BA+1],x-1,y,z-1), u),
+        lerp(grad(noisePerm[AB+1],x,y-1,z-1), grad(noisePerm[BB+1],x-1,y-1,z-1), u), v),
+      w);
+  }
+
+  // =========================================================
+  // MODE 1: continuous cellular automaton (Game-of-Life family
+  // with slow random reseeding so it never dies out or freezes)
+  // =========================================================
+  const Life = (function(){
+    let cell = 8, cols, rows, grid, age, next, hueBase=200, t=0;
+    function init(){
+      cell = Math.max(5, Math.round(Math.min(W,H)/110));
+      cols = Math.ceil(W/cell); rows = Math.ceil(H/cell);
+      grid = new Uint8Array(cols*rows);
+      age = new Float32Array(cols*rows);
+      next = new Uint8Array(cols*rows);
+      for(let i=0;i<grid.length;i++) grid[i] = Math.random() < 0.28 ? 1 : 0;
+      waves = [];
+    }
+    function idx(x,y){ x=(x+cols)%cols; y=(y+rows)%rows; return y*cols+x; }
+    function neighbors(x,y){
+      let n=0;
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+        if(dx===0&&dy===0) continue;
+        n += grid[idx(x+dx,y+dy)];
+      }
+      return n;
+    }
+    function kick(px,py,r){
+      const cx = Math.floor(px*cols), cy = Math.floor(py*rows);
+      const rad = Math.max(3, Math.floor(r*cols));
+      for(let y=-rad;y<=rad;y++) for(let x=-rad;x<=rad;x++){
+        if(x*x+y*y <= rad*rad && Math.random()<0.5) grid[idx(cx+x,cy+y)] = 1;
+      }
+    }
+    // touching the automaton also sends out an expanding ring of new cells —
+    // a literal wave of life propagating outward through the grid
+    let waves = [];
+    function addWave(px, py){
+      waves.push({cx: px*cols, cy: py*rows, age: 0});
+      if(waves.length > 5) waves.shift();
+    }
+    function stampWaves(){
+      // the field is usually densely alive, so just "reviving" cells in a
+      // ring is invisible against the noise — instead carve a dark leading
+      // edge (a literal clearing wavefront) with a bright trailing crest
+      // right behind it, so the pulse reads clearly as it sweeps outward
+      const speed = 1.15, band = 2.4;
+      const reach = Math.max(cols, rows) * 1.3;
+      waves = waves.filter(w => w.age*speed < reach);
+      for(const w of waves){
+        w.age += 1;
+        const radius = w.age*speed;
+        const rOuter = radius + band;
+        const minX = Math.max(0, Math.floor(w.cx-rOuter)), maxX = Math.min(cols-1, Math.ceil(w.cx+rOuter));
+        const minY = Math.max(0, Math.floor(w.cy-rOuter)), maxY = Math.min(rows-1, Math.ceil(w.cy+rOuter));
+        for(let y=minY;y<=maxY;y++){
+          for(let x=minX;x<=maxX;x++){
+            const dx=x-w.cx, dy=y-w.cy;
+            const d = Math.sqrt(dx*dx+dy*dy);
+            if(d > radius && d <= rOuter){
+              grid[idx(x,y)] = 0; // dark leading edge — the wavefront clearing a path
+            } else if(d > radius - band*1.4 && d <= radius){
+              if(Math.random() < 0.9) grid[idx(x,y)] = 1; // bright crest just behind it
+            }
+          }
+        }
+      }
+    }
+    function step(){
+      t++;
+      for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+        const i = idx(x,y), n = neighbors(x,y), alive = grid[i];
+        // "Day & Night"-like rule tuned to stay lively rather than settle
+        let out;
+        if(alive) out = (n===2||n===3||n===4||n===5) ? 1 : 0;
+        else out = (n===3||n===6||n===7||n===8) ? 1 : 0;
+        next[i] = out;
+      }
+      const tmp = grid; grid = next; next = tmp;
+      stampWaves();
+      for(let i=0;i<grid.length;i++){
+        if(grid[i]) age[i] = Math.min(age[i]+1, 240);
+        else age[i] = 0;
+      }
+      // gentle continuous reseeding so the field never fully stabilizes or dies
+      const liveRatio = grid.reduce((a,b)=>a+b,0)/grid.length;
+      if(liveRatio < 0.12 || t % 900 === 0){
+        for(let k=0;k<Math.floor(cols*rows*0.01);k++){
+          const x = Math.floor(Math.random()*cols), y = Math.floor(Math.random()*rows);
+          grid[idx(x,y)] = 1;
+        }
+      }
+      if(pointer.active) kick(pointer.x, pointer.y, 0.03);
+      while(pointer.kicks.length){
+        const k = pointer.kicks.shift();
+        kick(k.x, k.y, 0.05);
+        addWave(k.x, k.y);
+      }
+    }
+    function draw(){
+      ctx.fillStyle = 'rgba(4,5,9,0.5)';
+      ctx.fillRect(0,0,W,H);
+      hueBase = (hueBase + 0.05) % 360;
+      for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+        const i = idx(x,y);
+        if(!grid[i]) continue;
+        const a = age[i];
+        const hue = (hueBase + x*0.6 + y*0.3) % 360;
+        const light = 45 + Math.min(30, a*0.25);
+        ctx.fillStyle = `hsla(${hue}, 85%, ${light}%, ${0.55 + Math.min(0.4, a/240)})`;
+        ctx.fillRect(x*cell, y*cell, cell-1, cell-1);
+      }
+    }
+    return {
+      init, tick(){ step(); draw(); },
+      resize(){ init(); }
+    };
+  })();
+
+  // =========================================================
+  // MODE 2: flow field of particles drifting through evolving
+  // Perlin noise — a slowly, endlessly morphing organic field
+  // =========================================================
+  const Flow = (function(){
+    // ambient particles are the field's persistent "light" — always exactly
+    // `baseCount` of them, always respawning. click/tap sparks live in a
+    // separate, capped array so a long drag can never crowd out the ambient
+    // light (that used to happen: bursts and ambient shared one array with
+    // a front-shift cap, which silently deleted the ambient particles first)
+    let particles = [], bursts = [], impulses = [], z = 0, hue = 190, baseCount = 0;
+    function init(){
+      baseCount = Math.floor((W*H)/9000);
+      particles = new Array(baseCount).fill(0).map(()=>({
+        x: Math.random()*W, y: Math.random()*H,
+        px:0, py:0, life: Math.random()*200
+      }));
+      particles.forEach(p=>{p.px=p.x; p.py=p.y;});
+      bursts = [];
+      impulses = [];
+      ctx.fillStyle = '#05060a';
+      ctx.fillRect(0,0,W,H);
+    }
+    function driftAngle(x, y, z, scale){
+      return perlin3(x*scale, y*scale, z) * Math.PI * 4;
+    }
+    function step(){
+      z += 0.0018;
+      hue = (hue + 0.06) % 360;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(5,6,10,0.045)';
+      ctx.fillRect(0,0,W,H);
+
+      // every click/tap becomes an expanding shockwave ring that sweeps
+      // outward and shoves nearby particles, plus a burst of fresh sparks
+      while(pointer.kicks.length){
+        const k = pointer.kicks.shift();
+        impulses.push({x:k.x*W, y:k.y*H, age:0, extra: 26});
+        for(let i=0;i<24;i++){
+          const a = Math.random()*Math.PI*2, sp = 1+Math.random()*2;
+          bursts.push({
+            x:k.x*W, y:k.y*H, px:k.x*W, py:k.y*H,
+            life: 40+Math.random()*40, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp
+          });
+        }
+      }
+      if(impulses.length > 16) impulses.splice(0, impulses.length-16);
+      for(let i=impulses.length-1;i>=0;i--){
+        impulses[i].age += 1;
+        if(impulses[i].age > 100) impulses.splice(i,1);
+      }
+      if(bursts.length > 300) bursts.splice(0, bursts.length-300); // cap sparks only — never touches ambient particles
+
+      const scale = 0.0016;
+      ctx.globalCompositeOperation = 'lighter'; // additive blend so crossing streaks glow brighter, like real light
+
+      // ambient, persistent particles — this is the base light and it must never run dry
+      for(const p of particles){
+        p.px = p.x; p.py = p.y;
+        const angle = driftAngle(p.x, p.y, z, scale);
+        let vx = Math.cos(angle), vy = Math.sin(angle);
+        if(pointer.active){
+          const dx = p.x - pointer.x*W, dy = p.y - pointer.y*H;
+          const d2 = dx*dx+dy*dy;
+          if(d2 < 40000){ const f = (40000-d2)/40000; vx += dx*0.002*f; vy += dy*0.002*f; }
+        }
+        for(const imp of impulses){
+          const dx = p.x - imp.x, dy = p.y - imp.y;
+          const d = Math.sqrt(dx*dx+dy*dy) || 1;
+          const diff = Math.abs(d - imp.age*7);
+          if(diff < imp.extra){
+            const strength = (1 - diff/imp.extra) * Math.max(0, 1 - imp.age/100) * 3.4;
+            vx += (dx/d)*strength; vy += (dy/d)*strength;
+          }
+        }
+        p.x += vx*1.6; p.y += vy*1.6;
+        p.life -= 1;
+        if(p.x<0||p.x>W||p.y<0||p.y>H||p.life<=0){
+          p.x = Math.random()*W; p.y = Math.random()*H;
+          p.px = p.x; p.py = p.y; p.life = 120+Math.random()*200;
+        }
+        const h = (hue + (p.x+p.y)*0.03) % 360;
+        ctx.strokeStyle = `hsla(${h}, 95%, 70%, 0.85)`;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(p.px, p.py);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }
+
+      // click sparks — brighter and hotter, simply expire, never respawn
+      for(let i=bursts.length-1;i>=0;i--){
+        const p = bursts[i];
+        p.px = p.x; p.py = p.y;
+        const angle = driftAngle(p.x, p.y, z, scale);
+        let vx = Math.cos(angle) + p.vx, vy = Math.sin(angle) + p.vy;
+        p.vx *= 0.9; p.vy *= 0.9;
+        p.x += vx*1.6; p.y += vy*1.6;
+        p.life -= 1;
+        const h = (hue + (p.x+p.y)*0.03) % 360;
+        ctx.strokeStyle = `hsla(${h}, 95%, 78%, 1)`;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(p.px, p.py);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        if(p.x<0||p.x>W||p.y<0||p.y>H||p.life<=0) bursts.splice(i,1);
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    return { init, tick(){ step(); }, resize(){ init(); } };
+  })();
+
+  // =========================================================
+  // MODE 3: rippling "mirror membrane" — a warped reflective
+  // surface driven by overlapping oscillators + noise + touch
+  // =========================================================
+  const Mirror = (function(){
+    // Rendered through a small offscreen pixel buffer that gets scaled up
+    // with nearest-neighbor sampling — this keeps a very fine grid fast,
+    // since it's one buffer fill + one drawImage instead of thousands of
+    // individual fillRect calls.
+    let t = 0, ripples = [];
+    let grid, cols, rows, off, offCtx, imgData, buf;
+    function init(){
+      ripples = [];
+      grid = Math.max(3, Math.round(Math.min(W,H)/220)); // finer mesh, scales with screen size
+      cols = Math.ceil(W/grid); rows = Math.ceil(H/grid);
+      off = document.createElement('canvas');
+      off.width = cols; off.height = rows;
+      offCtx = off.getContext('2d');
+      imgData = offCtx.createImageData(cols, rows);
+      buf = imgData.data;
+    }
+    function addRipple(x,y){
+      ripples.push({x, y, t: t, strength: 1});
+      if(ripples.length > 6) ripples.shift();
+    }
+    function step(){
+      t += 0.012;
+
+      while(pointer.kicks.length){
+        const k = pointer.kicks.shift();
+        addRipple(k.x*W, k.y*H);
+      }
+      if(pointer.active && Math.random()<0.3) addRipple(pointer.x*W, pointer.y*H);
+
+      // drop fully-decayed ripples so a long drag doesn't keep paying for
+      // trig work whose contribution has become visually negligible
+      ripples = ripples.filter(r => (t - r.t) < 3);
+      const reachGrid = 700 / grid; // beyond this (px) the wave's amplitude is ~0
+      const reachGrid2 = reachGrid*reachGrid;
+
+      for(let j=0;j<rows;j++){
+        for(let i=0;i<cols;i++){
+          const x = i*grid, y = j*grid;
+          const n = perlin3(x*0.004, y*0.004, t*0.6);
+          let disp = n*10;
+          for(const r of ripples){
+            const dx = i-r.x/grid, dy = j-r.y/grid;
+            const dist2 = dx*dx+dy*dy;
+            if(dist2 > reachGrid2) continue;
+            const dist = Math.sqrt(dist2)*grid;
+            const age = t - r.t;
+            const wave = Math.sin(dist*0.06 - age*6) * Math.exp(-age*0.7) * Math.exp(-dist*0.0025);
+            disp += wave*22;
+          }
+          const hue = 200 + disp*4 + Math.sin(t*0.3+i*0.2)*20;
+          const light = Math.max(15, Math.min(80, 50 + disp*1.4));
+          const [r,g,b] = hsl2rgb(hue, 75, light);
+          const alpha = 0.92; // matches the previous slight blend toward the black backdrop
+          const p = (j*cols+i)*4;
+          buf[p] = r*alpha; buf[p+1] = g*alpha; buf[p+2] = b*alpha; buf[p+3] = 255;
+        }
+      }
+      offCtx.putImageData(imgData, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, 0, 0, cols, rows, 0, 0, W, H);
+    }
+    return { init, tick(){ step(); }, resize(){ init(); } };
+  })();
+
+  // ---------- mode switching ----------
+  const modes = { life: Life, flow: Flow, mirror: Mirror };
+  const descs = {
+    life: '常に微小なノイズを注入して永遠に変化し続ける、生成し続けるセルオートマトン。クリック・タップした場所から細胞が生まれ、さらに波紋のようなリング状の生命の波が外側へ広がっていきます。',
+    flow: 'ゆっくり進行するPerlinノイズ場に沿って粒子が流れ続ける、有機的なフローフィールド。クリック・タップすると衝撃波が輪となって広がり、粒子を弾き飛ばして発光バーストが起こります。',
+    mirror: '波紋と揺らぎが重なり続ける、反射する膜(ミラー膜)のサーフェス。クリック・タップした場所から波紋が広がり、既存の揺らぎと重なり合います。'
+  };
+  let current = 'life';
+  function activate(mode){
+    current = mode;
+    document.querySelectorAll('.tab').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
+    document.getElementById('desc').textContent = descs[mode];
+    modes[mode].init();
+  }
+  document.querySelectorAll('.tab').forEach(btn=>{
+    btn.addEventListener('click', ()=> activate(btn.dataset.mode));
+  });
+
+  // ---------- main loop ----------
+  let last = performance.now(), frames=0, fpsAcc=0;
+  function loop(now){
+    const dt = now - last; last = now;
+    frames++; fpsAcc += dt;
+    if(fpsAcc > 500){
+      document.getElementById('fps').textContent = Math.round(1000/(fpsAcc/frames)) + ' fps';
+      frames=0; fpsAcc=0;
+    }
+    modes[current].tick();
+    drawClickRings(now);
+    requestAnimationFrame(loop);
+  }
+
+  resize();
+  activate('life');
+  requestAnimationFrame(loop);
+  window.addEventListener('resize', ()=>{ resize(); modes[current].resize(); });
+})();
+</script>
+</body>
+</html>
