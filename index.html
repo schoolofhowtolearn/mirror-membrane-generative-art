@@ -461,7 +461,7 @@
     // with nearest-neighbor sampling — this keeps a very fine grid fast,
     // since it's one buffer fill + one drawImage instead of thousands of
     // individual fillRect calls.
-    let t = 0, ripples = [];
+    let t = 0, flowT = 0, ripples = [];
     let grid, cols, rows, off, offCtx, imgData, buf;
     const B = 4; // noise block size in fine cells — see note below
     let bcols, brows, blockN, blockWarp;
@@ -484,6 +484,11 @@
     }
     function step(){
       t += 0.012;
+      // slow breathing tempo for the base drift — layering two off-beat sine
+      // waves avoids a mechanical, constant-speed crawl and gives the surface
+      // the alternating fast/slow "breathing" feel of the real membrane
+      const tempo = 0.5 + 0.35*Math.sin(t*0.05) + 0.2*Math.sin(t*0.123 + 1.3);
+      flowT += 0.012 * Math.max(0.12, tempo);
 
       while(pointer.kicks.length){
         const k = pointer.kicks.shift();
@@ -507,7 +512,20 @@
       for(let bj=0; bj<brows; bj++){
         for(let bi=0; bi<bcols; bi++){
           const x = bi*B*grid, y = bj*B*grid;
-          blockN[bj*bcols+bi] = perlin3(x*0.004, y*0.004, t*0.6) * 10;
+          // domain-warp the sample point with a slower, larger-scale noise
+          // field before reading the base drift noise — a plain single-octave
+          // sample only ever varies smoothly along one axis, which reads as
+          // static parallel bands. Warping the coordinates first folds that
+          // into swirling, organic motion much closer to how the real
+          // membrane's overlapping actuator/vibration frequencies look.
+          // two decorrelated warp fields (different scale, phase and offset)
+          // so the displacement isn't a near-uniform shear — that's what was
+          // still reading as parallel diagonal ridges rather than blobs/swirls
+          const wx = x + perlin3(x*0.0022, y*0.0022, flowT*0.4 + 11) * 480;
+          const wy = y + perlin3(x*0.0022 - 300, y*0.0022 + 300, flowT*0.4 + 77) * 480;
+          const base = perlin3(wx*0.004, wy*0.004, flowT) * 9;
+          const detail = perlin3(wx*0.011 + 500, wy*0.011 + 500, flowT*1.7 + 50) * 4;
+          blockN[bj*bcols+bi] = base + detail;
           blockWarp[bj*bcols+bi] = hasRipples ? perlin3(bi*B*0.022, bj*B*0.022, t*0.3) * 38 : 0;
         }
       }
@@ -528,7 +546,10 @@
             const wave = Math.sin(dist*0.05 - age*6) * Math.exp(-age*0.7) * Math.exp(-dist*0.0025);
             disp += wave*17;
           }
-          let hueI = Math.round(200 + disp*4 + Math.sin(t*0.3+i*0.2)*20) % 360;
+          // hue now tracks only the (already organic, warped) disp field plus
+          // a slow global drift — a spatial-linear term here would print
+          // straight bands over the blobby noise regardless of its shape
+          let hueI = Math.round(200 + disp*5 + Math.sin(t*0.25)*15) % 360;
           if(hueI < 0) hueI += 360;
           const lightF = 50 + disp*1.4;
           const lightI = lightF < 15 ? 15 : (lightF > 80 ? 80 : lightF)|0;
