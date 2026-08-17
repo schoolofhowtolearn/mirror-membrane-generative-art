@@ -467,7 +467,7 @@
     let bcols, brows, blockN, blockWarp;
     function init(){
       ripples = [];
-      grid = Math.max(2, Math.round(Math.min(W,H)/380)); // finer mesh, scales with screen size
+      grid = Math.max(3, Math.round(Math.min(W,H)/220)); // finer mesh, scales with screen size
       cols = Math.ceil(W/grid); rows = Math.ceil(H/grid);
       off = document.createElement('canvas');
       off.width = cols; off.height = rows;
