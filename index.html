@@ -391,8 +391,16 @@
           p.px = p.x; p.py = p.y; p.life = 120+Math.random()*200;
         }
         const h = (hue + (p.x+p.y)*0.03) % 360;
-        ctx.strokeStyle = `hsla(${h}, 95%, 70%, 0.85)`;
-        ctx.lineWidth = 1.6;
+        // soft wide halo underneath a bright core — with additive blending
+        // this makes dense/fast streaks visibly glow instead of just being opaque
+        ctx.strokeStyle = `hsla(${h}, 95%, 68%, 0.3)`;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(p.px, p.py);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        ctx.strokeStyle = `hsla(${h}, 100%, 80%, 1)`;
+        ctx.lineWidth = 2.1;
         ctx.beginPath();
         ctx.moveTo(p.px, p.py);
         ctx.lineTo(p.x, p.y);
@@ -409,8 +417,14 @@
         p.x += vx*1.6; p.y += vy*1.6;
         p.life -= 1;
         const h = (hue + (p.x+p.y)*0.03) % 360;
-        ctx.strokeStyle = `hsla(${h}, 95%, 78%, 1)`;
-        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = `hsla(${h}, 95%, 75%, 0.4)`;
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(p.px, p.py);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        ctx.strokeStyle = `hsla(${h}, 100%, 85%, 1)`;
+        ctx.lineWidth = 2.1;
         ctx.beginPath();
         ctx.moveTo(p.px, p.py);
         ctx.lineTo(p.x, p.y);
