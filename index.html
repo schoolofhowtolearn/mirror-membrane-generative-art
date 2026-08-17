@@ -74,11 +74,10 @@
   <div id="title">
     <h1>Mirror Membrane — 生成アート試作 3種</h1>
     <p id="desc">停止せず永遠に姿を変え続ける生成アートのプロトタイプ。タブで切り替えて見比べられます。</p>
-    <p id="credit" style="margin:6px 0 0; font-size:10.5px; color:var(--sub); opacity:.6;">落合陽一氏の《null²》にインスパイアされた、非公式のファンメイド作品です</p>
   </div>
   <div id="tabs">
-    <button class="tab active" data-mode="life">セルオートマトン</button>
-    <button class="tab" data-mode="flow">フローフィールド</button>
+    <button class="tab active" data-mode="flow">フローフィールド</button>
+    <button class="tab" data-mode="life">セルオートマトン</button>
     <button class="tab" data-mode="mirror">ミラー膜</button>
   </div>
 </div>
@@ -622,7 +621,7 @@
   }
 
   resize();
-  activate('life');
+  activate('flow');
   requestAnimationFrame(loop);
   window.addEventListener('resize', ()=>{ resize(); modes[current].resize(); });
 })();
