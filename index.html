@@ -481,14 +481,18 @@
           const x = i*grid, y = j*grid;
           const n = perlin3(x*0.004, y*0.004, t*0.6);
           let disp = n*10;
+          // one warp sample per cell (not per ripple) — cheap, and it bends the
+          // ring radius into something organic and blobby instead of a crisp
+          // mathematically perfect circle. Reused across every ripple this cell.
+          const warp = ripples.length ? perlin3(i*0.022, j*0.022, t*0.3) * 38 : 0;
           for(const r of ripples){
             const dx = i-r.x/grid, dy = j-r.y/grid;
             const dist2 = dx*dx+dy*dy;
             if(dist2 > reachGrid2) continue;
-            const dist = Math.sqrt(dist2)*grid;
+            const dist = Math.sqrt(dist2)*grid + warp;
             const age = t - r.t;
-            const wave = Math.sin(dist*0.06 - age*6) * Math.exp(-age*0.7) * Math.exp(-dist*0.0025);
-            disp += wave*22;
+            const wave = Math.sin(dist*0.05 - age*6) * Math.exp(-age*0.7) * Math.exp(-dist*0.0025);
+            disp += wave*17;
           }
           const hue = 200 + disp*4 + Math.sin(t*0.3+i*0.2)*20;
           const light = Math.max(15, Math.min(80, 50 + disp*1.4));
