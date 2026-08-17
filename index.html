@@ -309,7 +309,7 @@
     // separate, capped array so a long drag can never crowd out the ambient
     // light (that used to happen: bursts and ambient shared one array with
     // a front-shift cap, which silently deleted the ambient particles first)
-    let particles = [], bursts = [], impulses = [], z = 0, hue = 190, baseCount = 0;
+    let particles = [], bursts = [], impulses = [], z = 0, hue = 190, baseCount = 0, pulseT = 0;
     function init(){
       baseCount = Math.floor((W*H)/9000);
       particles = new Array(baseCount).fill(0).map(()=>({
@@ -319,14 +319,23 @@
       particles.forEach(p=>{p.px=p.x; p.py=p.y;});
       bursts = [];
       impulses = [];
+      pulseT = Math.random()*10;
       ctx.fillStyle = '#05060a';
       ctx.fillRect(0,0,W,H);
     }
     function driftAngle(x, y, z, scale){
       return perlin3(x*scale, y*scale, z) * Math.PI * 4;
     }
+    // large, slow-moving zones of fast/slow flow, so the light doesn't drift
+    // at one constant pace — patches speed up and lull independently
+    function speedZone(x, y, z){
+      const n = perlin3(x*0.0009, y*0.0009, z*0.6 + 500);
+      return 0.3 + (n+1)/2 * 1.6; // ~0.3x (lull) .. 1.9x (surge)
+    }
     function step(){
       z += 0.0018;
+      pulseT += 0.006; // slow global breathing rhythm layered on top of the local zones
+      const pulse = 0.7 + Math.sin(pulseT)*0.45; // ~0.25x .. 1.15x
       hue = (hue + 0.06) % 360;
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = 'rgba(5,6,10,0.045)';
@@ -359,7 +368,8 @@
       for(const p of particles){
         p.px = p.x; p.py = p.y;
         const angle = driftAngle(p.x, p.y, z, scale);
-        let vx = Math.cos(angle), vy = Math.sin(angle);
+        const tempo = speedZone(p.x, p.y, z) * pulse; // where/when this particle sits fast vs slow
+        let vx = Math.cos(angle) * tempo, vy = Math.sin(angle) * tempo;
         if(pointer.active){
           const dx = p.x - pointer.x*W, dy = p.y - pointer.y*H;
           const d2 = dx*dx+dy*dy;
