@@ -159,6 +159,22 @@
     else if(h<300){r=x;g=0;b=c;} else {r=c;g=0;b=x;}
     return [(r+m)*255,(g+m)*255,(b+m)*255];
   }
+  // Mirror mode redraws its whole (large, fine-grained) pixel buffer every
+  // frame, and hsl2rgb's branchy math per-pixel was a measurable chunk of
+  // that cost. Its saturation is always 75, so precompute every hue×light
+  // combination once at load and turn the per-pixel work into array reads.
+  const MIRROR_LUT_SAT = 75;
+  const mirrorLUT = (function(){
+    const lut = new Uint8ClampedArray(360*101*3);
+    for(let h=0; h<360; h++){
+      for(let l=0; l<=100; l++){
+        const [r,g,b] = hsl2rgb(h, MIRROR_LUT_SAT, l);
+        const idx = (h*101+l)*3;
+        lut[idx]=r; lut[idx+1]=g; lut[idx+2]=b;
+      }
+    }
+    return lut;
+  })();
   function fade(t){ return t*t*t*(t*(t*6-15)+10); }
   function grad(hash, x, y, z){
     const h = hash & 15;
@@ -447,15 +463,20 @@
     // individual fillRect calls.
     let t = 0, ripples = [];
     let grid, cols, rows, off, offCtx, imgData, buf;
+    const B = 4; // noise block size in fine cells — see note below
+    let bcols, brows, blockN, blockWarp;
     function init(){
       ripples = [];
-      grid = Math.max(3, Math.round(Math.min(W,H)/220)); // finer mesh, scales with screen size
+      grid = Math.max(2, Math.round(Math.min(W,H)/380)); // finer mesh, scales with screen size
       cols = Math.ceil(W/grid); rows = Math.ceil(H/grid);
       off = document.createElement('canvas');
       off.width = cols; off.height = rows;
       offCtx = off.getContext('2d');
       imgData = offCtx.createImageData(cols, rows);
       buf = imgData.data;
+      bcols = Math.ceil(cols/B)+1; brows = Math.ceil(rows/B)+1;
+      blockN = new Float32Array(bcols*brows);
+      blockWarp = new Float32Array(bcols*brows);
     }
     function addRipple(x,y){
       ripples.push({x, y, t: t, strength: 1});
@@ -475,16 +496,29 @@
       ripples = ripples.filter(r => (t - r.t) < 3);
       const reachGrid = 700 / grid; // beyond this (px) the wave's amplitude is ~0
       const reachGrid2 = reachGrid*reachGrid;
+      const hasRipples = ripples.length > 0;
+
+      // the base drift noise and the ring-warp noise are both low-frequency —
+      // they barely change from one fine cell to the next — so sample them
+      // once per BxB block and reuse across the block instead of once per
+      // cell. This is what makes a fine (small-pixel) grid affordable: the
+      // per-cell cost stays limited to the cheap ripple math (sqrt/sin/exp),
+      // while the expensive perlin3 calls drop by ~B² (16x at B=4).
+      for(let bj=0; bj<brows; bj++){
+        for(let bi=0; bi<bcols; bi++){
+          const x = bi*B*grid, y = bj*B*grid;
+          blockN[bj*bcols+bi] = perlin3(x*0.004, y*0.004, t*0.6) * 10;
+          blockWarp[bj*bcols+bi] = hasRipples ? perlin3(bi*B*0.022, bj*B*0.022, t*0.3) * 38 : 0;
+        }
+      }
 
       for(let j=0;j<rows;j++){
+        const bj = j>>2;
         for(let i=0;i<cols;i++){
-          const x = i*grid, y = j*grid;
-          const n = perlin3(x*0.004, y*0.004, t*0.6);
-          let disp = n*10;
-          // one warp sample per cell (not per ripple) — cheap, and it bends the
-          // ring radius into something organic and blobby instead of a crisp
-          // mathematically perfect circle. Reused across every ripple this cell.
-          const warp = ripples.length ? perlin3(i*0.022, j*0.022, t*0.3) * 38 : 0;
+          const bi = i>>2;
+          const bIdx = bj*bcols+bi;
+          let disp = blockN[bIdx];
+          const warp = blockWarp[bIdx];
           for(const r of ripples){
             const dx = i-r.x/grid, dy = j-r.y/grid;
             const dist2 = dx*dx+dy*dy;
@@ -494,12 +528,14 @@
             const wave = Math.sin(dist*0.05 - age*6) * Math.exp(-age*0.7) * Math.exp(-dist*0.0025);
             disp += wave*17;
           }
-          const hue = 200 + disp*4 + Math.sin(t*0.3+i*0.2)*20;
-          const light = Math.max(15, Math.min(80, 50 + disp*1.4));
-          const [r,g,b] = hsl2rgb(hue, 75, light);
+          let hueI = Math.round(200 + disp*4 + Math.sin(t*0.3+i*0.2)*20) % 360;
+          if(hueI < 0) hueI += 360;
+          const lightF = 50 + disp*1.4;
+          const lightI = lightF < 15 ? 15 : (lightF > 80 ? 80 : lightF)|0;
+          const lutIdx = (hueI*101+lightI)*3;
           const alpha = 0.92; // matches the previous slight blend toward the black backdrop
           const p = (j*cols+i)*4;
-          buf[p] = r*alpha; buf[p+1] = g*alpha; buf[p+2] = b*alpha; buf[p+3] = 255;
+          buf[p] = mirrorLUT[lutIdx]*alpha; buf[p+1] = mirrorLUT[lutIdx+1]*alpha; buf[p+2] = mirrorLUT[lutIdx+2]*alpha; buf[p+3] = 255;
         }
       }
       offCtx.putImageData(imgData, 0, 0);
