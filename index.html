@@ -127,6 +127,10 @@
       const c = clickRings[i];
       const age = (now - c.start)/1000; // seconds
       if(age > 0.9){ clickRings.splice(i,1); continue; }
+      // mirror mode's own ripple wave already marks the tap location, so the
+      // shared white ring cursor is redundant there — skip drawing it (still
+      // prune it above so it doesn't linger if the mode is switched back)
+      if(current === 'mirror') continue;
       const p = age/0.9;
       ctx.beginPath();
       ctx.arc(c.x, c.y, 6 + p*70, 0, Math.PI*2);
@@ -526,7 +530,16 @@
           const base = perlin3(wx*0.004, wy*0.004, flowT) * 9;
           const detail = perlin3(wx*0.011 + 500, wy*0.011 + 500, flowT*1.7 + 50) * 4;
           blockN[bj*bcols+bi] = base + detail;
-          blockWarp[bj*bcols+bi] = hasRipples ? perlin3(bi*B*0.022, bj*B*0.022, t*0.3) * 38 : 0;
+          // ring-boundary jitter: this needs a wavelength comparable to (or
+          // shorter than) the ripple's own radius, otherwise it barely
+          // changes across one ring and just shifts its phase uniformly —
+          // which leaves the ring perfectly round, only rotated in effect.
+          // Sampling in pixel space at a much higher frequency, plus a
+          // second finer layer, actually breaks the circle into an
+          // irregular, organic edge.
+          blockWarp[bj*bcols+bi] = hasRipples
+            ? perlin3(x*0.006, y*0.006, t*0.35) * 55 + perlin3(x*0.017+200, y*0.017+200, t*0.6+300) * 24
+            : 0;
         }
       }
 
@@ -543,8 +556,18 @@
             if(dist2 > reachGrid2) continue;
             const dist = Math.sqrt(dist2)*grid + warp;
             const age = t - r.t;
+            // the exponential falloff still has ~17% amplitude left at the
+            // 700px reach cutoff, so simply stopping there printed a hard,
+            // very visible ring where the math just switches off. Taper the
+            // last stretch down to exactly 0 with a smoothstep so it fades
+            // out before the cutoff instead of snapping off.
+            let edgeFade = 1;
+            if(dist > 500){
+              const u = Math.min(1, (dist-500)/200);
+              edgeFade = 1 - u*u*(3-2*u);
+            }
             const wave = Math.sin(dist*0.05 - age*6) * Math.exp(-age*0.7) * Math.exp(-dist*0.0025);
-            disp += wave*17;
+            disp += wave*17*edgeFade;
           }
           // hue now tracks only the (already organic, warped) disp field plus
           // a slow global drift — a spatial-linear term here would print
