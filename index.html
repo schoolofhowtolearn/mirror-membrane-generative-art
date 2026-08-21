@@ -628,13 +628,15 @@
     // (unlike Mirror's crisp nearest-neighbor look, fire wants soft edges).
     const CELL = 4;
     // The whole simulation (reseeding + upward propagation) runs once per
-    // call to step(); calling it every animation frame gave both the
-    // flicker and the rise their full 60fps speed. Running it every few
-    // frames instead — while the canvas simply keeps showing the last
-    // drawn result in between — slows that whole motion down together,
-    // without touching how strong or grainy the flicker looks.
-    const FRAME_SKIP = 3;
-    let skipCounter = 0;
+    // call to step(); calling it every animation frame gives both the
+    // flicker and the rise their full 60fps speed. Advancing it only a
+    // fraction of the time instead — while the canvas simply keeps showing
+    // the last drawn result on the frames in between — slows that whole
+    // motion down proportionally, without touching how strong or grainy
+    // the flicker looks. An accumulator spreads the skipped frames evenly
+    // rather than clumping them, so e.g. 0.75 runs on 3 of every 4 frames.
+    const UPDATE_RATE = 0.75; // fraction of the original 60fps update speed
+    let updateAcc = 0;
     let cols, rows, off, offCtx, imgData, buf, heat;
     let decayScale;
     function init(){
@@ -646,7 +648,7 @@
       imgData = offCtx.createImageData(cols, rows);
       buf = imgData.data;
       heat = new Uint8ClampedArray(cols*rows);
-      skipCounter = 0;
+      updateAcc = 0;
       // tuned so the flame decays to nothing a bit above mid-screen on
       // average, regardless of how many rows the current viewport gives us
       decayScale = Math.max(3, Math.round(720/rows));
@@ -714,9 +716,9 @@
       ctx.drawImage(off, 0, 0, cols, rows, 0, 0, W, H);
     }
     return { init, tick(){
-      skipCounter++;
-      if(skipCounter < FRAME_SKIP) return;
-      skipCounter = 0;
+      updateAcc += UPDATE_RATE;
+      if(updateAcc < 1) return;
+      updateAcc -= 1;
       step();
     }, resize(){ init(); } };
   })();
