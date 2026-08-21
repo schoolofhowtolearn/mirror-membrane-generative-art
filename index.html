@@ -72,13 +72,14 @@
 
 <div id="hud">
   <div id="title">
-    <h1>Mirror Membrane — 生成アート試作 3種</h1>
+    <h1>Mirror Membrane — 生成アート試作 4種</h1>
     <p id="desc">停止せず永遠に姿を変え続ける生成アートのプロトタイプ。タブで切り替えて見比べられます。</p>
   </div>
   <div id="tabs">
     <button class="tab active" data-mode="flow">フローフィールド</button>
     <button class="tab" data-mode="life">セルオートマトン</button>
     <button class="tab" data-mode="mirror">ミラー膜</button>
+    <button class="tab" data-mode="fire">炎</button>
   </div>
 </div>
 
@@ -175,6 +176,36 @@
         const idx = (h*101+l)*3;
         lut[idx]=r; lut[idx+1]=g; lut[idx+2]=b;
       }
+    }
+    return lut;
+  })();
+  // Fire mode's heat->color palette: black -> ember -> red -> orange ->
+  // yellow -> near-white, precomputed once and read by index (same reasoning
+  // as mirrorLUT — a per-pixel branchy gradient function would be far too
+  // slow redrawn every frame at fine grid resolution).
+  const fireLUT = (function(){
+    const stops = [
+      [0,   0,  0,  0],
+      [32,  20, 2,  2],
+      [64,  90, 8,  2],
+      [96,  160,24, 0],
+      [128, 210,60, 0],
+      [160, 255,110,10],
+      [192, 255,170,30],
+      [224, 255,215,90],
+      [255, 255,250,215]
+    ];
+    const lut = new Uint8ClampedArray(256*3);
+    let si = 0;
+    for(let h=0; h<256; h++){
+      while(si < stops.length-2 && h > stops[si+1][0]) si++;
+      const a = stops[si], b = stops[si+1];
+      const span = b[0]-a[0];
+      const u = span>0 ? (h-a[0])/span : 0;
+      const idx = h*3;
+      lut[idx]   = a[1] + (b[1]-a[1])*u;
+      lut[idx+1] = a[2] + (b[2]-a[2])*u;
+      lut[idx+2] = a[3] + (b[3]-a[3])*u;
     }
     return lut;
   })();
@@ -588,12 +619,115 @@
     return { init, tick(){ step(); }, resize(){ init(); } };
   })();
 
+  const Fire = (function(){
+    // Classic "Doom fire" style: a small heat grid where every cell above
+    // the bottom row copies the cell below it, minus a random decay and a
+    // small random horizontal jitter. Repeated every frame, this alone is
+    // enough to produce a convincing flickering flame with no noise calls
+    // at all — cheap enough to run at a fine grid and then upscale smoothly
+    // (unlike Mirror's crisp nearest-neighbor look, fire wants soft edges).
+    const CELL = 4;
+    // The whole simulation (reseeding + upward propagation) runs once per
+    // call to step(); calling it every animation frame gave both the
+    // flicker and the rise their full 60fps speed. Running it every few
+    // frames instead — while the canvas simply keeps showing the last
+    // drawn result in between — slows that whole motion down together,
+    // without touching how strong or grainy the flicker looks.
+    const FRAME_SKIP = 3;
+    let skipCounter = 0;
+    let cols, rows, off, offCtx, imgData, buf, heat;
+    let decayScale;
+    function init(){
+      cols = Math.max(24, Math.ceil(W/CELL));
+      rows = Math.max(24, Math.ceil(H/CELL));
+      off = document.createElement('canvas');
+      off.width = cols; off.height = rows;
+      offCtx = off.getContext('2d');
+      imgData = offCtx.createImageData(cols, rows);
+      buf = imgData.data;
+      heat = new Uint8ClampedArray(cols*rows);
+      skipCounter = 0;
+      // tuned so the flame decays to nothing a bit above mid-screen on
+      // average, regardless of how many rows the current viewport gives us
+      decayScale = Math.max(3, Math.round(720/rows));
+    }
+    function seedBase(){
+      // bottom two rows are the "fuel": always hot, always flickering —
+      // this alone keeps the flame going forever with no interaction
+      for(let x=0;x<cols;x++){
+        heat[(rows-1)*cols+x] = 195 + ((Math.random()*61)|0);
+      }
+      if(rows>1){
+        for(let x=0;x<cols;x++){
+          heat[(rows-2)*cols+x] = 150 + ((Math.random()*80)|0);
+        }
+      }
+    }
+    function injectBlob(px, py, radius, strength){
+      const gx = Math.floor(px/W*cols), gy = Math.floor(py/H*rows);
+      const r2 = radius*radius;
+      for(let dy=-radius; dy<=radius; dy++){
+        const yy = gy+dy;
+        if(yy<0 || yy>=rows) continue;
+        const rowBase = yy*cols;
+        for(let dx=-radius; dx<=radius; dx++){
+          if(dx*dx+dy*dy>r2) continue;
+          const xx = gx+dx;
+          if(xx<0 || xx>=cols) continue;
+          const idx = rowBase+xx;
+          heat[idx] = Math.max(heat[idx], strength);
+        }
+      }
+    }
+    function step(){
+      seedBase();
+      // a click drops a hot blob right where you tapped, which then rises
+      // and warps the flame on its way up, same as tapping a real flame
+      while(pointer.kicks.length){
+        const k = pointer.kicks.shift();
+        injectBlob(k.x*W, k.y*H, 5, 255);
+      }
+      if(pointer.active) injectBlob(pointer.x*W, pointer.y*H, 4, 255);
+
+      for(let y=1; y<rows; y++){
+        const rowBase = y*cols;
+        const rowAbove = rowBase-cols;
+        for(let x=0; x<cols; x++){
+          const src = rowBase+x;
+          const v = heat[src];
+          if(v===0){ heat[rowAbove+x] = 0; continue; }
+          const jitter = (Math.random()*3)|0; // 0, 1 or 2
+          let dstX = x + (1-jitter); // shifts -1..+1
+          if(dstX<0) dstX = 0; else if(dstX>=cols) dstX = cols-1;
+          const decay = (jitter & 1) * decayScale;
+          heat[rowAbove+dstX] = v>decay ? v-decay : 0;
+        }
+      }
+
+      for(let i=0, n=cols*rows; i<n; i++){
+        const lutIdx = heat[i]*3;
+        const p = i*4;
+        buf[p]=fireLUT[lutIdx]; buf[p+1]=fireLUT[lutIdx+1]; buf[p+2]=fireLUT[lutIdx+2]; buf[p+3]=255;
+      }
+      offCtx.putImageData(imgData, 0, 0);
+      ctx.imageSmoothingEnabled = true; // soft upscale — fire should look soft, not pixelated
+      ctx.drawImage(off, 0, 0, cols, rows, 0, 0, W, H);
+    }
+    return { init, tick(){
+      skipCounter++;
+      if(skipCounter < FRAME_SKIP) return;
+      skipCounter = 0;
+      step();
+    }, resize(){ init(); } };
+  })();
+
   // ---------- mode switching ----------
-  const modes = { life: Life, flow: Flow, mirror: Mirror };
+  const modes = { life: Life, flow: Flow, mirror: Mirror, fire: Fire };
   const descs = {
     life: '常に微小なノイズを注入して永遠に変化し続ける、生成し続けるセルオートマトン。クリック・タップした場所から細胞が生まれ、さらに波紋のようなリング状の生命の波が外側へ広がっていきます。',
     flow: 'ゆっくり進行するPerlinノイズ場に沿って粒子が流れ続ける、有機的なフローフィールド。クリック・タップすると衝撃波が輪となって広がり、粒子を弾き飛ばして発光バーストが起こります。',
-    mirror: '波紋と揺らぎが重なり続ける、反射する膜(ミラー膜)のサーフェス。クリック・タップした場所から波紋が広がり、既存の揺らぎと重なり合います。'
+    mirror: '波紋と揺らぎが重なり続ける、反射する膜(ミラー膜)のサーフェス。クリック・タップした場所から波紋が広がり、既存の揺らぎと重なり合います。',
+    fire: '絶えず揺らめき続ける炎のシミュレーション。クリック・タップした場所に熱いかたまりが生まれ、炎に乗って立ちのぼりながら形を変えていきます。'
   };
   let current = 'life';
   function activate(mode){
