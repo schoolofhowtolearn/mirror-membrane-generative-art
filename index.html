@@ -732,7 +732,7 @@
     }
     const FORE = {cx:0.42, cy:-0.10, rx:0.50, ry:0.40}; // upper, larger forewing
     const HIND = {cx:0.30, cy:0.34, rx:0.34, ry:0.30};  // lower, smaller hindwing
-    const N_FORE = 46, N_HIND = 34, N_BODY = 14;
+    const N_FORE = 56, N_HIND = 40, N_BODY = 16;
     const pts = [];
     for(const side of [1, -1]){
       for(let i=0;i<N_FORE;i++){
@@ -775,7 +775,7 @@
     // ~170 particles across up to 9 butterflies at once is far more particles
     // than the single-butterfly dissolve effect ever draws at a time, so a
     // sampled subset keeps the same flowing-water look at a steady framerate
-    const FLIGHT_TRAIL_CHANCE = 0.18;
+    const FLIGHT_TRAIL_CHANCE = 0.12;
     let butterflies = [];
     let BASE_SCALE = 50;
     let lastT = null;
