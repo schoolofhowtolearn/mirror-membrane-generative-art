@@ -782,6 +782,102 @@
 
     function randRange(a, b){ return a + Math.random()*(b-a); }
 
+    // ---- backdrop: a dense, saturated flower field behind the flock, in
+    // the vein of Mika Ninagawa's hyper-vivid floral photography — deep
+    // magentas/reds/oranges/purples, soft bokeh-blurred blooms layered
+    // behind sharper ones, all kept dark/moody overall so the glowing
+    // blue particles stay the clear focal point rather than getting lost
+    // against a bright wall of color. Rendered once to an offscreen
+    // canvas at init/resize, then published as a CSS background-image on
+    // the shared <canvas> element itself rather than redrawn every frame:
+    // Morpho's own render() just clears to transparent (very cheap) so the
+    // static image shows through underneath, and the browser's own layer
+    // compositor handles it from there — far cheaper per frame than a full
+    // drawImage blit, which measured as a real, persistent frame-time cost
+    // here. The slow drift is done via backgroundPosition, not a redraw.
+    let bgReady = false;
+    let bgPanT = Math.random()*1000;
+    const FLOWER_HUES = [330, 345, 355, 12, 300, 282, 40]; // magenta, pink-red, red, red-orange, purple-magenta, purple, gold (rare)
+    function drawFlower(fctx, cx, cy, radius, hueBase, petalCount, rot){
+      // soft ambient halo behind the whole bloom
+      const halo = fctx.createRadialGradient(cx,cy,0,cx,cy,radius*1.2);
+      halo.addColorStop(0, `hsla(${hueBase},80%,55%,0.28)`);
+      halo.addColorStop(1, `hsla(${hueBase},80%,40%,0)`);
+      fctx.fillStyle = halo;
+      fctx.beginPath(); fctx.arc(cx,cy,radius*1.2,0,Math.PI*2); fctx.fill();
+      for(let i=0;i<petalCount;i++){
+        const ang = rot + (i/petalCount)*Math.PI*2 + (Math.random()-0.5)*0.3;
+        const petalLen = radius*(0.75+Math.random()*0.45);
+        const petalW = radius*(0.30+Math.random()*0.22);
+        const px = cx+Math.cos(ang)*petalLen*0.5;
+        const py = cy+Math.sin(ang)*petalLen*0.5;
+        const hue = hueBase + (Math.random()-0.5)*16;
+        const grad = fctx.createRadialGradient(px,py,0, px,py, petalW*1.3);
+        grad.addColorStop(0, `hsla(${hue},90%,58%,0.95)`);
+        grad.addColorStop(0.55, `hsla(${hue},85%,40%,0.65)`);
+        grad.addColorStop(1, `hsla(${hue},80%,22%,0)`);
+        fctx.fillStyle = grad;
+        fctx.beginPath();
+        fctx.ellipse(px, py, petalLen*0.55, petalW*0.55, ang, 0, Math.PI*2);
+        fctx.fill();
+      }
+      // bright center
+      const coreHue = (hueBase+30)%360;
+      const core = fctx.createRadialGradient(cx,cy,0,cx,cy,radius*0.22);
+      core.addColorStop(0, `hsla(${coreHue},55%,85%,0.95)`);
+      core.addColorStop(1, `hsla(${coreHue},55%,60%,0)`);
+      fctx.fillStyle = core;
+      fctx.beginPath(); fctx.arc(cx,cy,radius*0.22,0,Math.PI*2); fctx.fill();
+    }
+    function buildFlowerBackground(){
+      bgReady = false;
+      const bgW = Math.max(1, Math.round(W)), bgH = Math.max(1, Math.round(H));
+      const bg = document.createElement('canvas');
+      bg.width = bgW; bg.height = bgH;
+      const fctx = bg.getContext('2d');
+      // deep, near-black wash with the faintest warm tint — fully opaque
+      fctx.fillStyle = '#0a0410';
+      fctx.fillRect(0, 0, bgW, bgH);
+      const baseR = Math.min(bgW, bgH);
+      const count = Math.max(14, Math.floor((bgW*bgH)/34000));
+      // background layer: larger, blurred blooms (shallow-depth-of-field bokeh)
+      fctx.filter = `blur(${Math.max(6, baseR*0.012)}px)`;
+      for(let i=0; i<Math.floor(count*0.45); i++){
+        const cx = Math.random()*bgW, cy = Math.random()*bgH;
+        const radius = baseR*(0.09+Math.random()*0.09);
+        const hue = FLOWER_HUES[(Math.random()*FLOWER_HUES.length)|0];
+        drawFlower(fctx, cx, cy, radius, hue, 6+((Math.random()*3)|0), Math.random()*Math.PI*2);
+      }
+      // foreground layer: smaller, sharper blooms
+      fctx.filter = 'none';
+      for(let i=0; i<Math.ceil(count*0.55); i++){
+        const cx = Math.random()*bgW, cy = Math.random()*bgH;
+        const radius = baseR*(0.045+Math.random()*0.055);
+        const hue = FLOWER_HUES[(Math.random()*FLOWER_HUES.length)|0];
+        drawFlower(fctx, cx, cy, radius, hue, 5+((Math.random()*4)|0), Math.random()*Math.PI*2);
+      }
+      // vignette, darkest at the edges, so attention stays centered
+      const vign = fctx.createRadialGradient(
+        bgW/2, bgH/2, baseR*0.25,
+        bgW/2, bgH/2, baseR*0.75
+      );
+      vign.addColorStop(0, 'rgba(0,0,0,0)');
+      vign.addColorStop(1, 'rgba(3,1,6,0.75)');
+      fctx.fillStyle = vign;
+      fctx.fillRect(0, 0, bgW, bgH);
+      // overall darkening wash — keeps the whole backdrop moody and dim
+      // enough that the glowing particle butterflies stay the clear focus
+      fctx.fillStyle = 'rgba(4,2,8,0.5)';
+      fctx.fillRect(0, 0, bgW, bgH);
+      // published as a CSS background on the shared canvas element, sized
+      // a bit over 100% so backgroundPosition has room to drift in — the
+      // browser composites this layer for free, no per-frame JS redraw
+      canvas.style.backgroundImage = `url(${bg.toDataURL()})`;
+      canvas.style.backgroundSize = '128% 128%';
+      canvas.style.backgroundRepeat = 'no-repeat';
+      bgReady = true;
+    }
+
     // (re)initializes one butterfly in place — used both for the initial
     // population and to recycle a slot once its dissolve finishes, so the
     // flock never grows or shrinks, it just quietly replaces its members.
@@ -837,6 +933,7 @@
       const count = Math.max(4, Math.min(9, Math.round((W*H)/130000)));
       butterflies = new Array(count).fill(0).map(()=> spawnButterfly({}));
       lastT = null;
+      buildFlowerBackground();
       ctx.fillStyle = '#05070e';
       ctx.fillRect(0, 0, W, H);
     }
@@ -1064,12 +1161,16 @@
     }
 
     function render(){
-      // a near-hard clear each frame — every wing particle's local x
-      // position breathes in and out together as the wings flap, so any
-      // real motion trail turns that shared, correlated motion into a
-      // "sunburst" of radiating streaks instead of a readable wing shape
-      ctx.fillStyle = 'rgba(5,7,14,0.78)';
-      ctx.fillRect(0, 0, W, H);
+      // clear to fully transparent each frame — every wing particle's
+      // local x position breathes in and out together as the wings flap,
+      // so any real motion trail turns that shared, correlated motion into
+      // a "sunburst" of radiating streaks instead of a readable wing shape,
+      // same reasoning as the other modes' near-opaque clear. The flower
+      // backdrop lives as a CSS background behind the (here, transparent)
+      // canvas instead — clearRect is dramatically cheaper per frame than
+      // redrawing a full-canvas image, and the browser's own compositor
+      // shows the static backdrop through wherever nothing is drawn.
+      ctx.clearRect(0, 0, W, H);
       ctx.globalCompositeOperation = 'lighter';
       for(const b of butterflies){
         if(b.state === 'alive'){
@@ -1145,6 +1246,14 @@
         const now = performance.now();
         const dt = lastT===null ? 0 : Math.min(0.05, (now-lastT)/1000);
         lastT = now;
+        // slow drift across the flower backdrop — just a CSS style write,
+        // the browser compositor handles the actual repositioning
+        bgPanT += dt*0.06;
+        if(bgReady){
+          const px = 50 + 50*Math.sin(bgPanT*0.11);
+          const py = 50 + 50*Math.sin(bgPanT*0.07+1.7);
+          canvas.style.backgroundPosition = px.toFixed(2)+'% '+py.toFixed(2)+'%';
+        }
         step(dt);
         render();
       },
@@ -1166,6 +1275,10 @@
     current = mode;
     document.querySelectorAll('.tab').forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
     document.getElementById('desc').textContent = descs[mode];
+    // every other mode paints a fully opaque frame every tick, so a
+    // leftover CSS background would never actually show through — cleared
+    // anyway so nothing lingers behind a mode that doesn't expect it
+    if(mode !== 'morpho') canvas.style.backgroundImage = 'none';
     modes[mode].init();
   }
   document.querySelectorAll('.tab').forEach(btn=>{
