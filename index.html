@@ -1099,13 +1099,13 @@
       b.heading = opts.heading !== undefined ? opts.heading : Math.random()*Math.PI*2;
       b.headingZ = Math.random()*1000;
       b.seed = Math.random()*1000;
-      b.speed = randRange(40, 68);
+      b.speed = randRange(24, 40);
       b.flapPhase = Math.random()*Math.PI*2;
-      b.flapSpeed = randRange(2.1, 3.5);
+      b.flapSpeed = randRange(1.3, 2.1);
       b.flapNoiseZ = Math.random()*1000; // drives organic speeding-up/slowing-down of the wingbeat
       b.flapVar = 1;
       b.sizeMult = opts.sizeMult !== undefined ? opts.sizeMult : randRange(0.8, 1.3);
-      b.hueBase = opts.hueBase !== undefined ? opts.hueBase : randRange(200, 255); // morpho blue through violet
+      b.hueBase = opts.hueBase !== undefined ? opts.hueBase : randRange(206, 224); // vivid morpho electric blue
       b.scalePx = BASE_SCALE * b.sizeMult;
       b.hitR = b.scalePx * 0.9;
       b.state = 'materializing';
@@ -1184,7 +1184,7 @@
       [b.nextX, b.nextY] = pickFarPoint(b.x, renderY);
       b.nextHeading = Math.random()*Math.PI*2;
       b.nextSizeMult = randRange(0.8, 1.3);
-      b.nextHue = randRange(200, 255);
+      b.nextHue = randRange(206, 224);
       const nextScalePx = BASE_SCALE * b.nextSizeMult;
       for(const p of b.particles){
         const [wx, wy] = templateWorldPos(b, p, renderY);
@@ -1292,7 +1292,7 @@
     function drawParticle(x, y, b, p, alphaMult, sizeMult, glowMult){
       sizeMult = sizeMult || 1;
       glowMult = glowMult || 1;
-      const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*22; // iridescent shimmer across the wing
+      const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13; // iridescent shimmer, kept within true morpho blue
       const flick = 0.75 + 0.25*Math.sin(performance.now()*0.006*p.twinkleSpeed + p.twinkle);
       const core = 0.82*p.sizeJ*b.sizeMult*sizeMult;
       const a = Math.max(0, Math.min(1, alphaMult*flick));
@@ -1301,11 +1301,11 @@
       // that's what reads as "more light" without just clipping to solid white
       ctx.beginPath();
       ctx.arc(x, y, core*2.9*glowMult, 0, Math.PI*2);
-      ctx.fillStyle = `hsla(${hue},85%,70%,${Math.min(1, 0.21*a*glowMult)})`;
+      ctx.fillStyle = `hsla(${hue},100%,62%,${Math.min(1, 0.21*a*glowMult)})`;
       ctx.fill();
       ctx.beginPath();
       ctx.arc(x, y, core, 0, Math.PI*2);
-      ctx.fillStyle = `hsla(${hue},95%,90%,${a})`;
+      ctx.fillStyle = `hsla(${hue},100%,78%,${a})`;
       ctx.fill();
     }
 
@@ -1315,19 +1315,19 @@
     // thread of light without the wingbeat's breathing motion smearing
     // into the "sunburst" a real accumulating trail produced
     function drawFlightStreak(px, py, x, y, b, p){
-      const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*22;
+      const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13;
       const flick = 0.75 + 0.25*Math.sin(performance.now()*0.006*p.twinkleSpeed + p.twinkle);
       const core = 0.82*p.sizeJ*b.sizeMult;
       ctx.lineCap = 'round';
-      ctx.strokeStyle = `hsla(${hue},85%,72%,${0.15*flick})`;
+      ctx.strokeStyle = `hsla(${hue},100%,64%,${0.15*flick})`;
       ctx.lineWidth = core*3.0;
       ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke();
-      ctx.strokeStyle = `hsla(${hue},95%,90%,${0.85*flick})`;
+      ctx.strokeStyle = `hsla(${hue},100%,78%,${0.85*flick})`;
       ctx.lineWidth = core*1.2;
       ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke();
       ctx.beginPath();
       ctx.arc(x, y, core, 0, Math.PI*2);
-      ctx.fillStyle = `hsla(${hue},95%,92%,${flick})`;
+      ctx.fillStyle = `hsla(${hue},100%,80%,${flick})`;
       ctx.fill();
     }
 
@@ -1356,7 +1356,7 @@
             drawParticle(twx + p.mox*(1-eased), twy + p.moy*(1-eased), b, p, eased);
           }
         } else if(b.state === 'dissolving'){
-          const hueShift = Math.sin(b.flapPhase)*22; // reused across a particle's whole trail so it doesn't flicker between samples
+          const hueShift = Math.sin(b.flapPhase)*13; // reused across a particle's whole trail so it doesn't flicker between samples
           for(const p of b.particles){
             const t = Math.max(0, Math.min(1, (b.stateT-p.delay)/DISSOLVE_MS));
             // a quick bright flash as it turns to light, sustained while
@@ -1381,7 +1381,7 @@
               const [tx,ty] = dissolvePos(p, tk);
               ctx.beginPath();
               ctx.arc(tx, ty, core*(2.2+k*1.9)*Math.max(1,glow*0.6), 0, Math.PI*2);
-              ctx.fillStyle = `hsla(${hue},85%,72%,${Math.min(1, 0.16*ta)})`;
+              ctx.fillStyle = `hsla(${hue},100%,66%,${Math.min(1, 0.16*ta)})`;
               ctx.fill();
             }
             const [x,y] = dissolvePos(p, t);
