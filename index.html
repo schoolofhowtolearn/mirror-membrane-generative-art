@@ -1049,7 +1049,7 @@
     }
     const FORE = {cx:0.42, cy:-0.10, rx:0.50, ry:0.40}; // upper, larger forewing
     const HIND = {cx:0.30, cy:0.34, rx:0.34, ry:0.30};  // lower, smaller hindwing
-    const N_FORE = 13, N_HIND = 10, N_BODY = 6;
+    const N_FORE = 32, N_HIND = 24, N_BODY = 10;
     const pts = [];
     for(const side of [1, -1]){
       for(let i=0;i<N_FORE;i++){
@@ -1223,12 +1223,12 @@
       sizeMult = sizeMult || 1;
       const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*22; // iridescent shimmer across the wing
       const flick = 0.75 + 0.25*Math.sin(performance.now()*0.006*p.twinkleSpeed + p.twinkle);
-      const core = 1.3*p.sizeJ*b.sizeMult*sizeMult;
+      const core = 0.7*p.sizeJ*b.sizeMult*sizeMult;
       const a = Math.max(0, Math.min(1, alphaMult*flick));
       if(a <= 0.01) return;
       ctx.beginPath();
-      ctx.arc(x, y, core*3.2, 0, Math.PI*2);
-      ctx.fillStyle = `hsla(${hue},85%,65%,${0.22*a})`;
+      ctx.arc(x, y, core*2.6, 0, Math.PI*2);
+      ctx.fillStyle = `hsla(${hue},85%,65%,${0.16*a})`;
       ctx.fill();
       ctx.beginPath();
       ctx.arc(x, y, core, 0, Math.PI*2);
