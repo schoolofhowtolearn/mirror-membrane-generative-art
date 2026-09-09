@@ -1079,6 +1079,18 @@
     // rather than a single hard dot, like water flowing past
     const TRAIL_OFFSETS = [0.025, 0.055, 0.09, 0.14, 0.20];
     const TRAIL_FADE =    [0.55,  0.36,  0.22, 0.12, 0.05];
+    // the same blurred, widening-echo trail language as the dissolve
+    // effect above, but sampled from each particle's actual recent
+    // positions instead of a precomputed bezier — so ordinary flapping
+    // flight reads as the same soft flowing light, not just the dissolve
+    const FLIGHT_TRAIL_LEN = 3;
+    const FLIGHT_TRAIL_FADE = [0.34, 0.20, 0.10];
+    // only a random subset of each butterfly's particles carry a flowing
+    // trail during ordinary flight — applying it to every one of a wing's
+    // ~170 particles across up to 9 butterflies at once is far more particles
+    // than the single-butterfly dissolve effect ever draws at a time, so a
+    // sampled subset keeps the same flowing-water look at a steady framerate
+    const FLIGHT_TRAIL_CHANCE = 0.18;
     let butterflies = [];
     let BASE_SCALE = 50;
     let lastT = null;
@@ -1124,7 +1136,10 @@
           mox: Math.cos(ang)*dist, moy: Math.sin(ang)*dist, // materialize: scatter offset that converges to 0
           twinkle: Math.random()*Math.PI*2,
           twinkleSpeed: randRange(1.5, 3.5),
-          sizeJ: randRange(0.75, 1.25)
+          sizeJ: randRange(0.75, 1.25),
+          flickSeed: Math.random()*1000, // drives an irregular, non-periodic flicker via perlin noise
+          trail: null, // lazily filled with recent world positions once this particle starts rendering 'alive'
+          trailOn: Math.random() < FLIGHT_TRAIL_CHANCE
           // dissolve fields (startX/Y, ctrlX/Y, delay) are added by
           // beginDissolve() once this butterfly is actually touched
         };
@@ -1289,11 +1304,23 @@
       }
     }
 
+    // an irregular, non-periodic flicker (as opposed to a smooth sine
+    // pulse) — layers a slow perlin drift with a faster one so each
+    // particle randomly dims and brightens on its own uneven rhythm,
+    // occasionally dipping quite low, like real scintillating light
+    function particleFlick(p){
+      const t = performance.now()*0.001;
+      const slow = perlin3(p.flickSeed, 0, t*p.twinkleSpeed*0.35);
+      const fast = perlin3(p.flickSeed + 500, 0, t*p.twinkleSpeed*1.1 + p.twinkle);
+      const n = slow*0.65 + fast*0.35; // roughly -1..1, biased toward the slow drift
+      return Math.max(0.12, Math.min(1, 0.55 + 0.55*n));
+    }
+
     function drawParticle(x, y, b, p, alphaMult, sizeMult, glowMult){
       sizeMult = sizeMult || 1;
       glowMult = glowMult || 1;
       const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13; // iridescent shimmer, kept within true morpho blue
-      const flick = 0.75 + 0.25*Math.sin(performance.now()*0.006*p.twinkleSpeed + p.twinkle);
+      const flick = particleFlick(p);
       const core = 0.82*p.sizeJ*b.sizeMult*sizeMult;
       const a = Math.max(0, Math.min(1, alphaMult*flick));
       if(a <= 0.01) return;
@@ -1309,6 +1336,24 @@
       ctx.fill();
     }
 
+    // faded, progressively larger echoes behind a particle's last few
+    // positions — the same "light flowing through water" look the
+    // dissolve effect uses, applied to ordinary flapping flight
+    function drawFlightTrail(b, p){
+      if(!p.trail) return;
+      const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13;
+      const core = 0.82*p.sizeJ*b.sizeMult;
+      for(let k=0;k<p.trail.length;k++){
+        const fade = FLIGHT_TRAIL_FADE[k];
+        if(!fade) continue;
+        const tp = p.trail[k];
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, core*(2.0+k*1.7), 0, Math.PI*2);
+        ctx.fillStyle = `hsla(${hue},100%,66%,${fade})`;
+        ctx.fill();
+      }
+    }
+
     // a short soft streak from a particle's previous frame position to its
     // current one, plus the bright dot itself — redrawn fresh every frame
     // (no persistent canvas trail), so normal flight reads as a flowing
@@ -1316,7 +1361,7 @@
     // into the "sunburst" a real accumulating trail produced
     function drawFlightStreak(px, py, x, y, b, p){
       const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13;
-      const flick = 0.75 + 0.25*Math.sin(performance.now()*0.006*p.twinkleSpeed + p.twinkle);
+      const flick = particleFlick(p);
       const core = 0.82*p.sizeJ*b.sizeMult;
       ctx.lineCap = 'round';
       ctx.strokeStyle = `hsla(${hue},100%,64%,${0.15*flick})`;
@@ -1345,6 +1390,20 @@
           for(const p of b.particles){
             const [wx, wy] = templateWorldPos(b, p, renderY);
             if(p.px === undefined){ p.px = wx; p.py = wy; }
+            if(p.trailOn){
+              if(!p.trail){
+                p.trail = [];
+                for(let i=0;i<FLIGHT_TRAIL_LEN;i++) p.trail.push({x:wx, y:wy});
+              }
+              // shift the short position history back one slot, then record
+              // this frame's previous position at the front — a fixed-size
+              // pool of reused points, no per-frame allocation
+              for(let i=p.trail.length-1;i>0;i--){
+                p.trail[i].x = p.trail[i-1].x; p.trail[i].y = p.trail[i-1].y;
+              }
+              p.trail[0].x = p.px; p.trail[0].y = p.py;
+              drawFlightTrail(b, p);
+            }
             drawFlightStreak(p.px, p.py, wx, wy, b, p);
             p.px = wx; p.py = wy;
           }
