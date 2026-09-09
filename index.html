@@ -1189,9 +1189,12 @@
       const s = Math.sin(pointPhase);
       const openness = 0.15 + 0.85*Math.abs(s);
       // the membrane billows perpendicular to the span as it moves,
-      // strongest at the tip and easing to ~0 at the root, instead of
-      // the whole surface staying perfectly flat while it swings
-      const bow = s*WING_BOW*p.tx2;
+      // strongest at the tip and easing to ~0 at the root. Signed by tx
+      // (not just its square) so the left and right wings bow as mirror
+      // images of each other — without this sign, both sides swayed the
+      // same direction in lockstep, which read as the whole butterfly
+      // twisting/spinning rather than its two wings flexing
+      const bow = s*WING_BOW*p.tx*p.absTx;
       return poseWorldPos(p.tx, p.ty + bow, false, b.x, originY, b.heading, b.scalePx, openness);
     }
 
