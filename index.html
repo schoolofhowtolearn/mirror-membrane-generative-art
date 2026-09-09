@@ -929,7 +929,7 @@
     }
 
     function init(){
-      BASE_SCALE = Math.max(34, Math.min(70, Math.min(W, H)*0.07));
+      BASE_SCALE = Math.max(42, Math.min(88, Math.min(W, H)*0.088));
       const count = Math.max(4, Math.min(9, Math.round((W*H)/130000)));
       butterflies = new Array(count).fill(0).map(()=> spawnButterfly({}));
       lastT = null;
@@ -1105,7 +1105,7 @@
       glowMult = glowMult || 1;
       const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13; // iridescent shimmer, kept within true morpho blue
       const flick = particleFlick(p);
-      const core = 0.82*p.sizeJ*b.sizeMult*sizeMult;
+      const core = 1.02*p.sizeJ*b.sizeMult*sizeMult;
       const a = Math.max(0, Math.min(1, alphaMult*flick));
       if(a <= 0.01) return;
       // glowMult only swells the soft halo, not the already-bright core —
@@ -1126,7 +1126,7 @@
     function drawFlightTrail(b, p){
       if(!p.trail) return;
       const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13;
-      const core = 0.82*p.sizeJ*b.sizeMult;
+      const core = 1.02*p.sizeJ*b.sizeMult;
       for(let k=0;k<p.trail.length;k++){
         const fade = FLIGHT_TRAIL_FADE[k];
         if(!fade) continue;
@@ -1146,7 +1146,7 @@
     function drawFlightStreak(px, py, x, y, b, p){
       const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*13;
       const flick = particleFlick(p);
-      const core = 0.82*p.sizeJ*b.sizeMult;
+      const core = 1.02*p.sizeJ*b.sizeMult;
       ctx.lineCap = 'round';
       ctx.strokeStyle = `hsla(${hue},100%,64%,${0.15*flick})`;
       ctx.lineWidth = core*3.0;
@@ -1215,7 +1215,7 @@
             else alpha = Math.max(0, 1-(t-0.72)/0.28);
             if(alpha <= 0.01 && t <= 0) continue;
             const glow = 1 + Math.max(0, 1-t*5)*2.4;
-            const core = 0.7*p.sizeJ*b.sizeMult;
+            const core = 0.88*p.sizeJ*b.sizeMult;
             const hue = b.hueBase + hueShift;
             // a soft, blurred streak trailing behind the current position
             // — several faded, widening echoes sampled a little earlier
