@@ -72,7 +72,7 @@
 
 <div id="hud">
   <div id="title">
-    <h1>Mirror Membrane — 生成アート試作 4種</h1>
+    <h1>Mirror Membrane — 生成アート試作 5種</h1>
     <p id="desc">停止せず永遠に姿を変え続ける生成アートのプロトタイプ。タブで切り替えて見比べられます。</p>
   </div>
   <div id="tabs">
@@ -80,6 +80,7 @@
     <button class="tab" data-mode="life">セルオートマトン</button>
     <button class="tab" data-mode="mirror">ミラー膜</button>
     <button class="tab" data-mode="fire">炎</button>
+    <button class="tab" data-mode="morpho">モルフォ蝶</button>
   </div>
 </div>
 
@@ -635,10 +636,71 @@
     // motion down proportionally, without touching how strong or grainy
     // the flicker looks. An accumulator spreads the skipped frames evenly
     // rather than clumping them, so e.g. 0.75 runs on 3 of every 4 frames.
-    const UPDATE_RATE = 0.75; // fraction of the original 60fps update speed
+    const UPDATE_RATE = 0.6; // fraction of the original 60fps update speed (20% slower than before)
     let updateAcc = 0;
-    let cols, rows, off, offCtx, imgData, buf, heat;
-    let decayScale;
+    let cols, rows, off, offCtx, imgData, buf, heat, capRow;
+    let decayScale, fadeRows;
+    // A hidden Perlin noise field drives the flame from underneath: it
+    // never gets drawn, but its slowly-scrolling value at each column
+    // biases both which way rising heat drifts and where the boundary is
+    // most likely to surge — so the whole flame sways and erupts along one
+    // coherent, evolving current instead of every cell/column deciding
+    // independently. Reuses the same perlin3(x,y,z) noise as Flow mode.
+    let noiseZ = 0;
+    const NOISE_SCALE = 0.014; // spatial frequency across the width
+    const NOISE_SPEED = 0.0035; // how fast the field scrolls per step()
+    // per-column ceiling: how tall the center column can reach vs how
+    // suppressed columns get purely from being off-center (this alone
+    // gives the silhouette a rounded top; the egg's actual left/right
+    // boundary — including its narrower base and its widest point — comes
+    // from eggHalfWidth() below, applied on top of this per column)
+    const DOME_TOP_FRAC = 0.15;
+    // Egg silhouette: half-width (in the same -1..1 "u" units as above),
+    // as a function of height, 0 = the fuel row, 1 = the very top point.
+    // Three stages: a quick gentle widening from the base up to the
+    // "belly" (rounds off the bottom instead of a flat cut), a steady
+    // cruise through the middle, then a smooth taper to a point at the
+    // top. The base is seeded close to the target cruise width already
+    // (rather than relying on diffusion to widen it) since the flame's
+    // own rise drifts sideways only gradually as it climbs — a dramatic
+    // bulge far from the seeded base would just get suppressed away,
+    // unfilled. The taper starts partway up and runs long, so the top
+    // rounds off gently like an oval instead of coming to a sharp point.
+    const EGG_BASE_W = 0.40, EGG_BELLY_W = 0.46;
+    const EGG_BELLY_FRAC = 0.18, EGG_TOP_START = 0.55;
+    function eggHalfWidth(yFrac){
+      if(yFrac <= EGG_BELLY_FRAC){
+        const t = yFrac/EGG_BELLY_FRAC;
+        const s = t*t*(3-2*t);
+        return EGG_BASE_W + (EGG_BELLY_W-EGG_BASE_W)*s;
+      }
+      if(yFrac <= EGG_TOP_START) return EGG_BELLY_W;
+      const t = (yFrac-EGG_TOP_START)/(1-EGG_TOP_START);
+      const s = t*t*(3-2*t);
+      return EGG_BELLY_W*(1-s);
+    }
+    // The dome ceiling isn't perfectly rigid: each column has its own
+    // "boost" that occasionally surges upward at random (fast attack, slow
+    // release, like a lick of flame breaking through) and otherwise settles
+    // back to the plain capRow line — so the boundary itself breathes and
+    // some tongues randomly punch well past it instead of every column
+    // stopping at exactly the same height.
+    let capBoost, capBoostTarget, effCapRow, driftBias, localFadeRows;
+    // Sparks: small embers that break away right at the dome boundary and
+    // keep flying past it, independent of the heat grid's hard ceiling —
+    // this is what reads as "real" about a capped flame rather than a
+    // shape with a perfectly clean edge. They're simulated and drawn every
+    // animation frame (not throttled by UPDATE_RATE like the base flame),
+    // so their motion always stays smooth regardless of the base speed.
+    const MAX_SPARKS = 280;
+    let sparks = [], lastSparkT = null;
+    // A night sky behind the flame, confined to the upper part of the
+    // screen. Each star drifts slowly (its own speed and direction) and
+    // wraps around the edges, plus twinkles on its own cycle. The flame's
+    // own pixels stay opaque, but its dim, tapering edges (and the dark
+    // gaps between tongues) are see-through, so the sky shows through
+    // exactly where the fire fades to black instead of a flat backdrop.
+    let stars = [], starT = 0;
     function init(){
       cols = Math.max(24, Math.ceil(W/CELL));
       rows = Math.max(24, Math.ceil(H/CELL));
@@ -649,19 +711,61 @@
       buf = imgData.data;
       heat = new Uint8ClampedArray(cols*rows);
       updateAcc = 0;
+      sparks = [];
+      lastSparkT = null;
+      starT = 0;
+      const STAR_COUNT = Math.max(40, Math.floor((W*H)/9500));
+      stars = new Array(STAR_COUNT).fill(0).map(()=>({
+        x: Math.random()*W,
+        y: Math.random()*H*0.6, // keep the sky confined to the upper part of the screen
+        r: 0.6 + Math.random()*1.4,
+        baseA: 0.35 + Math.random()*0.55,
+        phase: Math.random()*Math.PI*2,
+        speed: 0.5 + Math.random()*1.3, // twinkle rate
+        vx: (Math.random()-0.5) * 4, // slow horizontal drift, px/sec
+        vy: (Math.random()-0.5) * 0.8 // very slight vertical drift, px/sec
+      }));
+      noiseZ = Math.random()*1000; // random start so every reload/resize looks different
       // tuned so the flame decays to nothing a bit above mid-screen on
       // average, regardless of how many rows the current viewport gives us
       decayScale = Math.max(3, Math.round(720/rows));
+      // a baseline ceiling every column shares equally (tongues push
+      // individual columns higher via capBoost below) — the left/right
+      // narrowing that used to live here is now entirely eggHalfWidth's
+      // job, so the two constraints shape independently instead of both
+      // narrowing off-center columns and compounding into an over-narrow
+      // belly
+      capRow = new Float32Array(cols).fill(DOME_TOP_FRAC * rows);
+      // how many rows just below the dome boundary get gradually darkened,
+      // so the silhouette fades to black instead of stopping abruptly
+      fadeRows = Math.max(6, Math.round(rows*0.14));
+      capBoost = new Float32Array(cols);
+      capBoostTarget = new Float32Array(cols);
+      effCapRow = new Float32Array(cols);
+      driftBias = new Float32Array(cols);
+      localFadeRows = new Float32Array(cols);
     }
     function seedBase(){
       // bottom two rows are the "fuel": always hot, always flickering —
-      // this alone keeps the flame going forever with no interaction
+      // this alone keeps the flame going forever with no interaction.
+      // Tapered to the egg's own base width (with a soft edge) instead of
+      // spanning the full canvas, so the flame's bottom is already narrow
+      // like the rest of the egg rather than a flat full-width strip.
+      const EDGE_SOFT = 0.04;
+      const w0 = eggHalfWidth(0);
       for(let x=0;x<cols;x++){
-        heat[(rows-1)*cols+x] = 195 + ((Math.random()*61)|0);
+        const au = Math.abs((x+0.5)/cols*2-1);
+        if(au > w0+EDGE_SOFT) continue;
+        const soft = au<=w0 ? 1 : 1-(au-w0)/EDGE_SOFT;
+        heat[(rows-1)*cols+x] = Math.round((195 + Math.random()*61) * soft);
       }
       if(rows>1){
+        const w1 = eggHalfWidth(1/(rows-1));
         for(let x=0;x<cols;x++){
-          heat[(rows-2)*cols+x] = 150 + ((Math.random()*80)|0);
+          const au = Math.abs((x+0.5)/cols*2-1);
+          if(au > w1+EDGE_SOFT) continue;
+          const soft = au<=w1 ? 1 : 1-(au-w1)/EDGE_SOFT;
+          heat[(rows-2)*cols+x] = Math.round((150 + Math.random()*80) * soft);
         }
       }
     }
@@ -691,45 +795,499 @@
       }
       if(pointer.active) injectBlob(pointer.x*W, pointer.y*H, 4, 255);
 
+      // a hidden Perlin field scrolls slowly across the width; wherever it
+      // currently peaks is where a tongue is allowed to surge through the
+      // boundary, and that peak drifts smoothly over time — so eruptions
+      // travel along the field's flow instead of popping up independently.
+      // A second, differently-offset sample of the same field nudges which
+      // way each column's rising heat leans, so nearby columns sway
+      // together rather than jittering on their own.
+      noiseZ += NOISE_SPEED;
+      for(let x=0; x<cols; x++){
+        const eruptField = perlin3(x*NOISE_SCALE, noiseZ, 3.1); // -1..1
+        driftBias[x] = perlin3(x*NOISE_SCALE*1.6, noiseZ*1.15, 91.7); // -1..1
+
+        if(Math.random() < 0.01){
+          if(eruptField > 0.3){
+            const strength = (eruptField-0.3)/0.7; // 0..1, how far past the erupt threshold
+            const surge = rows*(0.05 + strength*0.16); // smaller tongues than before
+            const radius = 1 + ((Math.random()*3)|0); // a tongue ~3-7 cells wide
+            for(let dx=-radius; dx<=radius; dx++){
+              const xx = x+dx;
+              if(xx<0 || xx>=cols) continue;
+              const val = surge * (1 - Math.abs(dx)/(radius+1));
+              if(val > capBoostTarget[xx]) capBoostTarget[xx] = val;
+            }
+          } else {
+            capBoostTarget[x] = 0;
+          }
+        }
+        const diff = capBoostTarget[x] - capBoost[x];
+        capBoost[x] += diff * (diff > 0 ? 0.13 : 0.065);
+        effCapRow[x] = capRow[x] - capBoost[x];
+        // a tongue's whole extra reach dissolves into darkness, not just a
+        // thin strip at its very tip — the taller the current surge, the
+        // longer the fade tail trailing below it into black
+        localFadeRows[x] = fadeRows + capBoost[x]*0.85;
+      }
+
+      const EGG_FADE_U = 0.045; // how gradual the egg's left/right boundary fades, in u-units
       for(let y=1; y<rows; y++){
         const rowBase = y*cols;
         const rowAbove = rowBase-cols;
+        const yAbove = y-1; // actual row index of the destination row (rowAbove is just its array offset)
+        const yFrac = 1 - yAbove/(rows-1); // 0 at the fuel row, 1 at the very top
+        const eggW = eggHalfWidth(yFrac);
         for(let x=0; x<cols; x++){
           const src = rowBase+x;
           const v = heat[src];
           if(v===0){ heat[rowAbove+x] = 0; continue; }
-          const jitter = (Math.random()*3)|0; // 0, 1 or 2
-          let dstX = x + (1-jitter); // shifts -1..+1
-          if(dstX<0) dstX = 0; else if(dstX>=cols) dstX = cols-1;
-          const decay = (jitter & 1) * decayScale;
-          heat[rowAbove+dstX] = v>decay ? v-decay : 0;
+          // three-way drift (left/stay/right) same as before, but skewed by
+          // the noise field's current lean at this column instead of a
+          // plain coin flip — so the sway itself follows the field's flow
+          const bias = driftBias[x] * 0.27; // keeps every direction's odds positive
+          const rightP = 1/3 + bias, leftP = 1/3 - bias;
+          const r = Math.random();
+          let dstX, stay;
+          if(r < rightP){ dstX = x+1; stay = false; }
+          else if(r < rightP+leftP){ dstX = x-1; stay = false; }
+          else { dstX = x; stay = true; }
+          // drifting past either edge lets that heat fall off-screen and
+          // vanish, instead of being clamped back onto the edge column —
+          // clamping was piling extra heat (and spark launches) onto
+          // columns 0 and cols-1 every time neighboring heat tried to drift
+          // further outward, which is what caused the pile-up of sparks
+          // seen at the screen's edges
+          if(dstX<0 || dstX>=cols) continue;
+          const decay = stay ? decayScale : 0;
+          const base = v>decay ? v-decay : 0;
+          // heat itself — not just its displayed color — tapers smoothly
+          // through the boundary: one continuous curve running from full
+          // strength well below it, through a soft mid-value exactly at
+          // it, fading to nothing well above it. No separate "approaching
+          // from below" vs "tapering above" formulas meeting at a seam —
+          // a single curve means no seam to create a bright rim or line.
+          const dAbove = effCapRow[dstX] - yAbove; // >0 above the boundary, <0 below it
+          const belowSpan = fadeRows, aboveSpan = localFadeRows[dstX];
+          let mult = 1;
+          if(dAbove > -belowSpan){
+            const t = Math.min(1, Math.max(0, (dAbove+belowSpan)/(belowSpan+aboveSpan)));
+            mult = 1 - t*t*(3-2*t);
+          }
+          // the egg's own left/right boundary at this height — separate
+          // from the per-column ceiling above, this is what gives the
+          // silhouette its bulging belly and its narrower base and tip
+          const uDst = (dstX+0.5)/cols*2-1;
+          const outsideEgg = Math.abs(uDst) - eggW;
+          if(outsideEgg > -EGG_FADE_U){
+            const te = Math.min(1, Math.max(0, (outsideEgg+EGG_FADE_U)/(EGG_FADE_U*2)));
+            mult *= 1 - te*te*(3-2*te);
+          }
+          heat[rowAbove+dstX] = base*mult;
+          // a cell fading out past the boundary has a chance to launch a
+          // spark instead — the "piece of flame breaking off" look —
+          // more likely right at the boundary, tapering off with it
+          if(dAbove > 0 && v>50 && Math.random()<0.22*mult) launchSpark(dstX, yAbove, v);
         }
       }
 
+      // on top of the boundary break-off sparks above, pop a few more
+      // sparks from random spots anywhere inside the flame's current lit
+      // body — not just its tip — so sparks read as coming from the whole
+      // flame rather than only its topmost edge
+      spawnBodySparks();
+
+      // the heat field itself already carries the full boundary gradient
+      // now (see the taper in the propagation loop above), so coloring is
+      // back to a plain per-cell lookup — no separate fade multiplier that
+      // could disagree with it and create a seam. Alpha tracks heat too
+      // (instead of always being opaque), so wherever the flame fades
+      // toward black it also fades toward transparent, letting the night
+      // sky drawn behind it show through instead of a flat dark backdrop.
+      // Alpha ramps up faster than the raw heat value so most of the
+      // flame's body reads as solid/opaque — only its dim, fading fringes
+      // stay see-through, rather than the whole thing looking translucent.
       for(let i=0, n=cols*rows; i<n; i++){
         const lutIdx = heat[i]*3;
         const p = i*4;
-        buf[p]=fireLUT[lutIdx]; buf[p+1]=fireLUT[lutIdx+1]; buf[p+2]=fireLUT[lutIdx+2]; buf[p+3]=255;
+        buf[p]=fireLUT[lutIdx]; buf[p+1]=fireLUT[lutIdx+1]; buf[p+2]=fireLUT[lutIdx+2]; buf[p+3]=Math.min(255, heat[i]*1.8);
       }
       offCtx.putImageData(imgData, 0, 0);
+    }
+    function updateStars(dt){
+      if(dt<=0) return;
+      for(let i=0; i<stars.length; i++){
+        const s = stars[i];
+        s.x += s.vx*dt;
+        s.y += s.vy*dt;
+        // wrap around so the drift never runs a star off-screen for good
+        if(s.x < 0) s.x += W; else if(s.x >= W) s.x -= W;
+        const skyH = H*0.6;
+        if(s.y < 0) s.y += skyH; else if(s.y >= skyH) s.y -= skyH;
+      }
+    }
+    function drawStars(){
+      for(let i=0; i<stars.length; i++){
+        const s = stars[i];
+        // two sine waves at different, unrelated rates so the flicker
+        // reads as an irregular twinkle rather than one smooth pulse —
+        // and dips much closer to fully dark than before, so it's a
+        // clearly visible sparkle rather than a faint brightness wobble
+        const w1 = Math.sin(starT*s.speed + s.phase);
+        const w2 = Math.sin(starT*s.speed*2.9 + s.phase*1.7);
+        const tw = 0.5 + 0.5*(w1*0.7 + w2*0.3);
+        ctx.globalAlpha = s.baseA * (0.08 + 0.92*tw);
+        const sz = s.r * (0.8 + 0.4*tw); // twinkling stars also swell slightly at their brightest
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(s.x - sz/2, s.y - sz/2, sz, sz);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function launchSpark(gx, gy, heatVal){
+      if(sparks.length >= MAX_SPARKS) return;
+      const px = (gx+0.5)/cols*W;
+      const py = (gy+0.5)/rows*H;
+      sparks.push({
+        x: px, y: py,
+        vx: (Math.random()-0.5) * 80,
+        vy: -(100 + Math.random()*170), // keeps rising well past the boundary at launch
+        age: 0,
+        life: 0.8 + Math.random()*1.5,
+        size: 1.6 + Math.random()*2.6
+      });
+    }
+    function spawnBodySparks(){
+      // sample points uniformly across the *entire* grid — base, middle
+      // and tip alike — and launch a spark from each hot enough one, so
+      // sparks read as coming from the whole body of the fire rather than
+      // clustering near its topmost edge
+      for(let k=0; k<12; k++){
+        if(Math.random() > 0.5) continue;
+        const x = (Math.random()*cols)|0;
+        const y = (Math.random()*rows)|0;
+        const v = heat[y*cols+x];
+        if(v > 80) launchSpark(x, y, v);
+      }
+    }
+    function updateSparks(dt){
+      if(dt<=0 || !sparks.length) return;
+      for(let i=sparks.length-1; i>=0; i--){
+        const s = sparks[i];
+        s.age += dt;
+        if(s.age >= s.life){ sparks.splice(i,1); continue; }
+        s.vy += 65*dt;              // rise loses momentum as the ember cools, like real embers
+        s.vx += (Math.random()-0.5)*260*dt; // little sideways turbulence
+        s.vx *= (1 - 1.4*dt);
+        s.x += s.vx*dt;
+        s.y += s.vy*dt;
+      }
+    }
+    function drawSparks(){
+      if(!sparks.length) return;
+      for(let i=0; i<sparks.length; i++){
+        const s = sparks[i];
+        const t = s.age/s.life; // 0 fresh .. 1 dying
+        const alpha = Math.max(0, 1 - t*t);
+        const g = Math.max(0, Math.round(215 - 175*t));
+        const b = Math.max(0, Math.round(90 - 90*t));
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = `rgb(255,${g},${b})`;
+        const sz = s.size * (1 - t*0.5);
+        ctx.fillRect(s.x-sz/2, s.y-sz/2, sz, sz);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function render(){
+      // repaint the night sky fresh every frame (fire's own alpha is now
+      // partial near its faded edges, so the backdrop must be redrawn each
+      // time rather than relying on last frame's leftover pixels)
+      ctx.fillStyle = '#03040a';
+      ctx.fillRect(0, 0, W, H);
+      drawStars();
       ctx.imageSmoothingEnabled = true; // soft upscale — fire should look soft, not pixelated
       ctx.drawImage(off, 0, 0, cols, rows, 0, 0, W, H);
+      drawSparks();
     }
     return { init, tick(){
+      const now = performance.now();
+      const dt = lastSparkT===null ? 0 : Math.min(0.05, (now-lastSparkT)/1000);
+      lastSparkT = now;
+
       updateAcc += UPDATE_RATE;
-      if(updateAcc < 1) return;
-      updateAcc -= 1;
-      step();
+      if(updateAcc >= 1){
+        updateAcc -= 1;
+        step();
+      }
+      starT += dt; // twinkle and drift every frame, independent of the base flame's own update rate
+      updateStars(dt);
+      updateSparks(dt);
+      render();
     }, resize(){ init(); } };
   })();
 
+  // =========================================================
+  // MODE 5: light-particle Morpho butterflies drifting through
+  // the dark, each made of glowing points instead of a solid
+  // shape. Touching one scatters it into drifting, fading light
+  // that softly disperses — a new butterfly is then born, fully
+  // formed from its own gathering light, somewhere else on screen.
+  // =========================================================
+  // Every butterfly shares one silhouette, built once: two ellipse
+  // "wings" per side (a larger swept forewing, a smaller hindwing)
+  // filled by rejection-sampling random points inside them, plus a
+  // short line of points down the body. Reused as a rigid template —
+  // each butterfly just transforms it by its own position, heading
+  // and wing-flap phase every frame, rather than resampling points.
+  const MORPHO_TEMPLATE = (function(){
+    function sampleEllipse(cx, cy, rx, ry){
+      for(let tries=0; tries<40; tries++){
+        const x = cx + (Math.random()*2-1)*rx;
+        const y = cy + (Math.random()*2-1)*ry;
+        if(((x-cx)*(x-cx))/(rx*rx) + ((y-cy)*(y-cy))/(ry*ry) <= 1) return [x, y];
+      }
+      return [cx, cy];
+    }
+    const FORE = {cx:0.42, cy:-0.10, rx:0.50, ry:0.40}; // upper, larger forewing
+    const HIND = {cx:0.30, cy:0.34, rx:0.34, ry:0.30};  // lower, smaller hindwing
+    const N_FORE = 13, N_HIND = 10, N_BODY = 6;
+    const pts = [];
+    for(const side of [1, -1]){
+      for(let i=0;i<N_FORE;i++){
+        const [x,y] = sampleEllipse(FORE.cx, FORE.cy, FORE.rx, FORE.ry);
+        pts.push({tx: x*side, ty: y, body:false});
+      }
+      for(let i=0;i<N_HIND;i++){
+        const [x,y] = sampleEllipse(HIND.cx, HIND.cy, HIND.rx, HIND.ry);
+        pts.push({tx: x*side, ty: y, body:false});
+      }
+    }
+    for(let i=0;i<N_BODY;i++){
+      const ty = -0.15 + 0.70*(i/(N_BODY-1));
+      pts.push({tx: (Math.random()-0.5)*0.03, ty, body:true});
+    }
+    return pts;
+  })();
+
+  const Morpho = (function(){
+    const DISSOLVE_MS = 1.3;    // seconds a touched butterfly takes to fully scatter and fade
+    const MATERIALIZE_MS = 0.9; // seconds a new butterfly takes to gather into shape
+    const EDGE_MARGIN = 110;    // px from the border where flight gently steers back inward
+    const BOB_PX = 4;           // small vertical bob synced to the wingbeat, for a flitting feel
+    let butterflies = [];
+    let BASE_SCALE = 50;
+    let lastT = null;
+
+    function randRange(a, b){ return a + Math.random()*(b-a); }
+
+    // (re)initializes one butterfly in place — used both for the initial
+    // population and to recycle a slot once its dissolve finishes, so the
+    // flock never grows or shrinks, it just quietly replaces its members
+    function spawnButterfly(b){
+      b.x = randRange(W*0.15, W*0.85);
+      b.y = randRange(H*0.15, H*0.75);
+      b.heading = Math.random()*Math.PI*2;
+      b.headingZ = Math.random()*1000;
+      b.seed = Math.random()*1000;
+      b.speed = randRange(55, 95);
+      b.flapPhase = Math.random()*Math.PI*2;
+      b.flapSpeed = randRange(3.0, 5.0);
+      b.sizeMult = randRange(0.8, 1.3);
+      b.hueBase = randRange(200, 255); // morpho blue through violet
+      b.scalePx = BASE_SCALE * b.sizeMult;
+      b.hitR = b.scalePx * 0.9;
+      b.state = 'materializing';
+      // staggering the start slightly (some already-positive, some still
+      // negative) means a freshly (re)populated flock doesn't all snap
+      // into being on the exact same frame
+      b.stateT = -Math.random()*MATERIALIZE_MS*0.6;
+      b.particles = MORPHO_TEMPLATE.map(t=>{
+        const ang = Math.random()*Math.PI*2, dist = randRange(40, 110);
+        return {
+          tx: t.tx, ty: t.ty, body: t.body,
+          mox: Math.cos(ang)*dist, moy: Math.sin(ang)*dist, // materialize: scatter offset that converges to 0
+          wx: 0, wy: 0, vx: 0, vy: 0,                        // dissolve: independent drifting world position
+          twinkle: Math.random()*Math.PI*2,
+          twinkleSpeed: randRange(1.5, 3.5),
+          sizeJ: randRange(0.75, 1.25)
+        };
+      });
+      return b;
+    }
+
+    function init(){
+      BASE_SCALE = Math.max(34, Math.min(70, Math.min(W, H)*0.07));
+      const count = Math.max(4, Math.min(9, Math.round((W*H)/130000)));
+      butterflies = new Array(count).fill(0).map(()=> spawnButterfly({}));
+      lastT = null;
+      ctx.fillStyle = '#05070e';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // where a template point currently sits in world space, for a butterfly
+    // in its normal rigid (alive/materializing) flight pose — wings pinch
+    // toward the body and spread back out once per wingbeat via `openness`,
+    // the whole shape then rotated to face the flight heading and placed
+    // at the butterfly's position
+    function templateWorldPos(b, p, originY){
+      const openness = 0.15 + 0.85*Math.abs(Math.sin(b.flapPhase));
+      const lx = p.body ? p.tx : p.tx*openness;
+      const ly = p.ty;
+      const phi = b.heading + Math.PI/2;
+      const cos = Math.cos(phi), sin = Math.sin(phi);
+      const wx = lx*cos - ly*sin, wy = lx*sin + ly*cos;
+      return [b.x + wx*b.scalePx, originY + wy*b.scalePx];
+    }
+
+    function beginDissolve(b, renderY){
+      b.state = 'dissolving';
+      b.stateT = 0;
+      for(const p of b.particles){
+        const [wx, wy] = templateWorldPos(b, p, renderY);
+        const dx = wx - b.x, dy = wy - renderY;
+        const d = Math.hypot(dx, dy) || 1;
+        const outSpeed = 30 + Math.random()*55;
+        p.wx = wx; p.wy = wy;
+        // scatters outward from the butterfly's center, with a little
+        // random spread and a gentle upward buoyancy — soft dispersing
+        // light rather than an explosion
+        p.vx = (dx/d)*outSpeed + (Math.random()-0.5)*22;
+        p.vy = (dy/d)*outSpeed + (Math.random()-0.5)*22 - 16;
+      }
+    }
+
+    function updateFlight(b, dt){
+      // heading wanders on its own slow Perlin stream (one per butterfly,
+      // via its own fixed `seed`), same idea as Fire's drift field, just
+      // steering a heading angle instead of biasing a column
+      b.headingZ += 0.5*dt;
+      const turn = perlin3(b.seed, 0, b.headingZ) * 1.8;
+      b.heading += turn*dt;
+      // softly steer back toward center near the edges instead of a hard
+      // wall or wraparound, so the flight stays natural-looking
+      const edgeDist = Math.min(b.x, W-b.x, b.y, H-b.y);
+      if(edgeDist < EDGE_MARGIN){
+        const push = 1 - edgeDist/EDGE_MARGIN;
+        const toCenter = Math.atan2(H/2-b.y, W/2-b.x);
+        let diff = toCenter - b.heading;
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+        b.heading += diff*push*3.0*dt;
+      }
+      b.flapPhase += b.flapSpeed*dt;
+      const spd = b.speed*(0.85+0.15*Math.sin(b.flapPhase*0.5));
+      b.x += Math.cos(b.heading)*spd*dt;
+      b.y += Math.sin(b.heading)*spd*dt;
+      b.x = Math.min(Math.max(b.x, 10), W-10);
+      b.y = Math.min(Math.max(b.y, 10), H-10);
+    }
+
+    function step(dt){
+      // touches: a tap/click, or the pointer resting on a butterfly while
+      // held down, both dissolve it — consumed once per frame so a long
+      // drag doesn't retrigger every single frame
+      const kicks = [];
+      while(pointer.kicks.length) kicks.push(pointer.kicks.shift());
+      for(const b of butterflies){
+        if(b.state !== 'alive') continue;
+        const renderY = b.y + Math.sin(b.flapPhase*2)*BOB_PX;
+        let hit = false;
+        for(const k of kicks){
+          const dx = k.x*W-b.x, dy = k.y*H-renderY;
+          if(dx*dx+dy*dy < b.hitR*b.hitR){ hit = true; break; }
+        }
+        if(!hit && pointer.active){
+          const dx = pointer.x*W-b.x, dy = pointer.y*H-renderY;
+          if(dx*dx+dy*dy < b.hitR*b.hitR) hit = true;
+        }
+        if(hit) beginDissolve(b, renderY);
+      }
+
+      for(const b of butterflies){
+        if(b.state === 'alive'){
+          updateFlight(b, dt);
+        } else if(b.state === 'materializing'){
+          b.flapPhase += b.flapSpeed*dt*0.6;
+          b.stateT += dt;
+          if(b.stateT >= MATERIALIZE_MS) { b.state = 'alive'; b.stateT = 0; }
+        } else if(b.state === 'dissolving'){
+          b.stateT += dt;
+          for(const p of b.particles){
+            p.vx *= 0.985; p.vy *= 0.985;
+            p.wx += p.vx*dt; p.wy += p.vy*dt;
+          }
+          if(b.stateT >= DISSOLVE_MS) spawnButterfly(b); // recycle this slot as a brand new butterfly
+        }
+      }
+    }
+
+    function drawParticle(x, y, b, p, alphaMult, sizeMult){
+      sizeMult = sizeMult || 1;
+      const hue = b.hueBase + Math.sin(b.flapPhase + p.tx*4)*22; // iridescent shimmer across the wing
+      const flick = 0.75 + 0.25*Math.sin(performance.now()*0.006*p.twinkleSpeed + p.twinkle);
+      const core = 1.3*p.sizeJ*b.sizeMult*sizeMult;
+      const a = Math.max(0, Math.min(1, alphaMult*flick));
+      if(a <= 0.01) return;
+      ctx.beginPath();
+      ctx.arc(x, y, core*3.2, 0, Math.PI*2);
+      ctx.fillStyle = `hsla(${hue},85%,65%,${0.22*a})`;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, core, 0, Math.PI*2);
+      ctx.fillStyle = `hsla(${hue},95%,88%,${a})`;
+      ctx.fill();
+    }
+
+    function render(){
+      // a near-hard clear each frame — every wing particle's local x
+      // position breathes in and out together as the wings flap, so any
+      // real motion trail turns that shared, correlated motion into a
+      // "sunburst" of radiating streaks instead of a readable wing shape
+      ctx.fillStyle = 'rgba(5,7,14,0.78)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalCompositeOperation = 'lighter';
+      for(const b of butterflies){
+        if(b.state === 'alive'){
+          const renderY = b.y + Math.sin(b.flapPhase*2)*BOB_PX;
+          for(const p of b.particles){
+            const [wx, wy] = templateWorldPos(b, p, renderY);
+            drawParticle(wx, wy, b, p, 1);
+          }
+        } else if(b.state === 'materializing'){
+          const t = Math.max(0, Math.min(1, b.stateT/MATERIALIZE_MS));
+          const eased = 1 - Math.pow(1-t, 3);
+          for(const p of b.particles){
+            const [twx, twy] = templateWorldPos(b, p, b.y);
+            drawParticle(twx + p.mox*(1-eased), twy + p.moy*(1-eased), b, p, eased);
+          }
+        } else if(b.state === 'dissolving'){
+          const t = Math.min(1, b.stateT/DISSOLVE_MS);
+          const alpha = (1-t)*(1-t);
+          for(const p of b.particles) drawParticle(p.wx, p.wy, b, p, alpha, 1+t*1.6);
+        }
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    return {
+      init,
+      tick(){
+        const now = performance.now();
+        const dt = lastT===null ? 0 : Math.min(0.05, (now-lastT)/1000);
+        lastT = now;
+        step(dt);
+        render();
+      },
+      resize(){ init(); }
+    };
+  })();
+
   // ---------- mode switching ----------
-  const modes = { life: Life, flow: Flow, mirror: Mirror, fire: Fire };
+  const modes = { life: Life, flow: Flow, mirror: Mirror, fire: Fire, morpho: Morpho };
   const descs = {
     life: '常に微小なノイズを注入して永遠に変化し続ける、生成し続けるセルオートマトン。クリック・タップした場所から細胞が生まれ、さらに波紋のようなリング状の生命の波が外側へ広がっていきます。',
     flow: 'ゆっくり進行するPerlinノイズ場に沿って粒子が流れ続ける、有機的なフローフィールド。クリック・タップすると衝撃波が輪となって広がり、粒子を弾き飛ばして発光バーストが起こります。',
     mirror: '波紋と揺らぎが重なり続ける、反射する膜(ミラー膜)のサーフェス。クリック・タップした場所から波紋が広がり、既存の揺らぎと重なり合います。',
-    fire: '絶えず揺らめき続ける炎のシミュレーション。クリック・タップした場所に熱いかたまりが生まれ、炎に乗って立ちのぼりながら形を変えていきます。'
+    fire: '絶えず揺らめき続ける炎のシミュレーション。クリック・タップした場所に熱いかたまりが生まれ、炎に乗って立ちのぼりながら形を変えていきます。',
+    morpho: '光の粒子でできたモルフォ蝶が、暗闇の中を静かに飛び回ります。触れると粒子になってふわりと霧散し、しばらくすると別の場所からまた新しい蝶が生まれます。'
   };
   let current = 'life';
   function activate(mode){
