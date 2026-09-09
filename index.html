@@ -1054,11 +1054,13 @@
     for(const side of [1, -1]){
       for(let i=0;i<N_FORE;i++){
         const [x,y] = sampleEllipse(FORE.cx, FORE.cy, FORE.rx, FORE.ry);
-        pts.push({tx: x*side, ty: y, body:false});
+        const tx = x*side;
+        pts.push({tx, ty: y, body:false, absTx: Math.abs(tx), tx2: tx*tx});
       }
       for(let i=0;i<N_HIND;i++){
         const [x,y] = sampleEllipse(HIND.cx, HIND.cy, HIND.rx, HIND.ry);
-        pts.push({tx: x*side, ty: y, body:false});
+        const tx = x*side;
+        pts.push({tx, ty: y, body:false, absTx: Math.abs(tx), tx2: tx*tx});
       }
     }
     for(let i=0;i<N_BODY;i++){
@@ -1132,7 +1134,7 @@
         // shape into focus instead of gathering it from far away
         const ang = Math.random()*Math.PI*2, dist = randRange(8, 26);
         return {
-          tx: t.tx, ty: t.ty, body: t.body,
+          tx: t.tx, ty: t.ty, body: t.body, absTx: t.absTx, tx2: t.tx2,
           mox: Math.cos(ang)*dist, moy: Math.sin(ang)*dist, // materialize: scatter offset that converges to 0
           twinkle: Math.random()*Math.PI*2,
           twinkleSpeed: randRange(1.5, 3.5),
@@ -1167,11 +1169,30 @@
       const wx = lx*cos - ly*sin, wy = lx*sin + ly*cos;
       return [x + wx*scalePx, originY + wy*scalePx];
     }
+    // how far a point's flap motion trails the body's, and how much the
+    // membrane bows outward mid-stroke — both grow with distance from the
+    // hinge, so the wing reads as flexible material catching up to and
+    // curling with its own root's motion instead of one rigid flat plate
+    const WING_LAG = 0.85;
+    const WING_BOW = 0.16;
     // a template point's current world position for a butterfly in its
-    // normal rigid (alive/materializing) flight pose
+    // normal (alive/materializing) flight pose
     function templateWorldPos(b, p, originY){
-      const openness = 0.15 + 0.85*Math.abs(Math.sin(b.flapPhase));
-      return poseWorldPos(p.tx, p.ty, p.body, b.x, originY, b.heading, b.scalePx, openness);
+      if(p.body){
+        const openness = 0.15 + 0.85*Math.abs(Math.sin(b.flapPhase));
+        return poseWorldPos(p.tx, p.ty, true, b.x, originY, b.heading, b.scalePx, openness);
+      }
+      // points farther out along the wing (larger |tx|) see an earlier
+      // phase than the root — the tip is still finishing the previous
+      // beat while the root has already started the next one
+      const pointPhase = b.flapPhase - p.absTx*WING_LAG;
+      const s = Math.sin(pointPhase);
+      const openness = 0.15 + 0.85*Math.abs(s);
+      // the membrane billows perpendicular to the span as it moves,
+      // strongest at the tip and easing to ~0 at the root, instead of
+      // the whole surface staying perfectly flat while it swings
+      const bow = s*WING_BOW*p.tx2;
+      return poseWorldPos(p.tx, p.ty + bow, false, b.x, originY, b.heading, b.scalePx, openness);
     }
 
     // picks a birth spot for the next butterfly that's at least a good
