@@ -1174,7 +1174,7 @@
     // hinge, so the wing reads as flexible material catching up to and
     // curling with its own root's motion instead of one rigid flat plate
     const WING_LAG = 0.85;
-    const WING_BOW = 0.16;
+    const WING_BOW = 0.30;
     // a template point's current world position for a butterfly in its
     // normal (alive/materializing) flight pose
     function templateWorldPos(b, p, originY){
@@ -1186,15 +1186,21 @@
       // phase than the root — the tip is still finishing the previous
       // beat while the root has already started the next one
       const pointPhase = b.flapPhase - p.absTx*WING_LAG;
-      const s = Math.sin(pointPhase);
-      const openness = 0.15 + 0.85*Math.abs(s);
-      // the membrane billows perpendicular to the span as it moves,
-      // strongest at the tip and easing to ~0 at the root. Signed by tx
-      // (not just its square) so the left and right wings bow as mirror
-      // images of each other — without this sign, both sides swayed the
-      // same direction in lockstep, which read as the whole butterfly
-      // twisting/spinning rather than its two wings flexing
-      const bow = s*WING_BOW*p.tx*p.absTx;
+      // an unsigned 0..1 "how open is THIS point right now" — used to
+      // drive both the spread (openness) and the bow below. Driving both
+      // from the same unsigned value (instead of bow following the raw
+      // signed sine, which cycles at twice the rate of the fold) keeps
+      // each particle's own path a simple back-and-forth arc rather than
+      // a loop — a signed-vs-unsigned mismatch between the two is what
+      // made the wingtips trace tiny circles and read as the butterfly
+      // spinning, even after the left/right mirroring fix
+      const fold = Math.abs(Math.sin(pointPhase));
+      const openness = 0.15 + 0.85*fold;
+      // the membrane bows perpendicular to the span as it spreads —
+      // slack when folded in, most curved at full spread — strongest at
+      // the tip and easing to ~0 at the root, and signed by tx so the
+      // left and right wings bow as mirror images of each other
+      const bow = fold*WING_BOW*p.tx*p.absTx;
       return poseWorldPos(p.tx, p.ty + bow, false, b.x, originY, b.heading, b.scalePx, openness);
     }
 
